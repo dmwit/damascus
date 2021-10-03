@@ -53,7 +53,7 @@ A patch is again an **i64**, to be added with the usual two's complement wrap-ar
 
 (The mod operation chooses its representative from the range -2<sup>63</sup> through 2<sup>63</sup>-1.)
 
-Particular messages may restrict numbers further, such as by demanding that they fit in an unsigned byte (0 through 255 inclusive). This may mean that patches are forced to be out of the bounds for the type they are modifying; for example, with the unsigned-byte restriction, to change from `255` to `0`, one must use the patch `-255`, not `1`, even though `-255` does not fit in a single unsigned byte. As another example, if the number is restricted to the range `100` through `110`, none of the possible patches fall in the same range as the i64 itself.
+Particular messages may restrict numbers further, such as by demanding that they fit in an unsigned byte (0 through 255 inclusive). This may mean that patches are forced to be out of the bounds for the type they are modifying; for example, with the unsigned-byte restriction, to change from `255` to `0`, one must use the patch `-255`, not `1`, even though `-255` does not fit in a single unsigned byte. As another example, if the number is restricted to the range `100` through `110`, none of the possible patches fall in the same range as the **i64** itself.
 
 ### Strings (**string**)
 
@@ -170,6 +170,10 @@ For the algebraically minded, custom types are sums of products with an implicit
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
+| **cell**
+| | `cell` | `0`
+| | | | **i64** | in the range [0,17] | shape information
+| | | | **i64** | | color information
 | **server step**
 | | `pill` | `0` | | | The player is being given control of a new pill.
 | |        | | **i64** | non-negative and smaller than the board width | the x position of the bottom left of a new pill
@@ -185,11 +189,9 @@ To avoid ambiguity in abstract values, the variant names will not begin or end w
 
 For each variant, we can construct a set of tuples. These tuples have one more element than there are fields, and consist of the variant name followed by an interpretation of each field type. The interpretation of the new custom type is the union of these sets over all variants. Custom types are permitted to recursively mention themselves (or other mutually recursive custom types) as fields; the interpretation uses a least fixed-point construction.
 
-TODO: after nailing down the format of cells, come back and make this `new board` message more interesting (and its followup in the concrete value discussion)
+An abstract value is constructed by including the variant name, optional whitespace, and a comma-separated sequence of the abstract values for the fields surrounded by parentheses. For example, `pill(3, 7, 0, [1, 2])` describes a new pill of the default shape coming under control at position (3, 7) with blue and red halves, and `new board([[cell(16,3), cell(1,1)], [cell(17,0), cell(2,2)]])` describes the player being shown 2⨯2 board with a blue-red horizontal pill resting its left half on top of a yellow virus. If a variant has no fields, the abstract value is allowed to be just the variant's name; for example, `true()` and `true` are abstract values representing the same thing.
 
-An abstract value is constructed by including the variant name, optional whitespace, and a comma-separated sequence of the abstract values for the fields surrounded by parentheses. For example, `pill(3, 7, 0, [1, 2])` describes a new pill of the default shape coming under control at position (3, 7) with blue and red halves, and `new board([[0, 0], [0, 0]])` describes the player being shown a blank 2⨯2 board. If a variant has no fields, the abstract value is allowed to be just the variant's name; for example, `true()` and `true` are abstract values representing the same thing.
-
-In the simplest case, a concrete value uses CBOR's array type, major type 4. The array contains a concrete value for a tag followed by concrete values for each of the associated variant's fields. For example, the abstract value `pill(3, 7, 0, [1, 2])` could be encoded to the 8-byte concrete value `'8500030700820102'`, and the abstract value `new board([[0, 0], [0, 0]])` could be encoded to the 9-byte concrete value `'820182820000820000'`.
+In the simplest case, a concrete value uses CBOR's array type, major type 4. The array contains a concrete value for a tag followed by concrete values for each of the associated variant's fields. For example, the abstract value `pill(3, 7, 0, [1, 2])` could be encoded to the 8-byte concrete value `'8500030700820102'`, and the abstract value `new board([[cell(16,3), cell(1,1)], [cell(17,0), cell(2,2)]])` could be encoded to the 17-byte concrete value `'8201828282100382010182821100820202'`.
 
 Two exceptions are made to this pattern. First, if there is exactly one variant, the tag MUST be omitted from the array, yielding an array one element shorter than usual. Second, if the result is an array of exactly one element, the array wrapping mechanism MUST be omitted, causing the concrete value to be that element directly. For example, consider these hypothetical types:
 
@@ -218,14 +220,19 @@ Contrast the concrete values for `shape(3)` and `just(3)`, which both have just 
 
 The **shape** type described above is a case of particular interest. The rules described above mean that although **shape** is notionally distinct from **i64**, it nevertheless has the same representations in concrete values; that is, there is no overhead associated with introducing extra levels of aliasing in this way.
 
-Patches allow for patching fields within a variant, providing a complete new value (potentially a different variant), or doing nothing. In detail: suppose the type under consideration is *T*. The type Δ*T* is also a custom type. It has one variant for each variant of *T* with at least one field. The new variant name has `Δ` prepended, and the new tag is one bigger. The new variant has as many fields as the old one; their types are the patch types for the old variant's fields. If *T* does not have exactly one variant, then Δ*T* also includes two new variants: `no change`, with no fields and a tag one smaller than the smallest of the other variants of Δ*T* (or `0` if all variants of *T* have zero fields); and `replace`, with a field of type *T* and a tag one larger than the largest of the other variants of Δ*T* (or `1` if all variants of *T* have zero fields). The following table gives examples for each of the custom types previously discussed:
+Patches allow for patching fields within a variant, providing a complete new value (potentially a different variant), or doing nothing. In detail: suppose the type under consideration is *T*. The type Δ*T* is also a custom type. It has one variant for each variant of *T* with at least one field. The new variant name has `Δ` prepended, and the new tag is one bigger. The new variant has as many fields as the old one; their types are the patch types for the old variant's fields. If *T* is not a single-variant, single-field type, then Δ*T* includes a new variant, `no change`, with no fields and a tag one smaller than the smallest of the other variants of Δ*T* (or `0` if all variants of *T* have zero fields). If *T* does not have exactly one variant, then Δ*T* includes a new variant, `replace`, with a field of type *T* and a tag one larger than the largest of the other variants of Δ*T* (or `1` if all variants of *T* have zero fields). The following table gives examples for each of the custom types previously discussed:
 
 | Type name | Variant | Tag | Fields
 | --------- | ------- | --- | ------
+| **Δcell**
+| | `no change` | `0`
+| | `Δcell` | `1`
+| | | | **Δi64** (=**i64**)
+| | | | **Δi64**
 | **Δserver step**
 | | `no change` | `0`
 | | `Δpill` | `1`
-| |         | | **Δi64** (=**i64**)
+| |         | | **Δi64**
 | |         | | **Δi64**
 | |         | | **Δi64**
 | |         | | **Δ[i64]**
@@ -259,7 +266,7 @@ The *patch* implementation does the obvious thing. When given a collection of fi
 
 # Rambling
 
-stuff that happens in-game: message id's 0-23
+stuff that happens in-game: message id's 0-23  
 stuff where latency/bandwidth doesn't matter: bigger id's
 
 if you like, can think of client messages as one big custom type, and server messages as another big custom type
