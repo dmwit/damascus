@@ -274,19 +274,17 @@ client message id 25, reject all versions, no fields
 
 60 fps for now, part of the negotiable setup options in future specs
 
-server message id 25, current state, fields **i64** for the latest frame the server has committed to and **{string: player state}** for the individual states of each participating player (see below)
+server message id 25, current state, fields **i64** for the latest frame the server has committed to and **{string: player state with predictions}** for the individual states of each participating player (see below)
 
-### Movement rules
+### Core types
 
-#### Types
-
-A ***cell*** describes what to draw at one grid location on the board, and includes a *shape* and a *color*.
+A ***cell*** describes what to draw at one grid location on the board, and includes a shape and a color.
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
 | **cell**
 | | `cell` | `0`
-| | | | **i64** | in the range [0,17] | shape information
+| | | | **i64** | in the range [0,17] | shape information; see below
 | | | | **i64** | | color information
 
 There are three classes of shapes: pill components (0-15), viruses (16), and unoccupied spaces (17). The pill components are expressed as a four-bit field describing whether the component should be drawn as connecting to its neighbors in each of the four directions, with a 1 bit indicating a connection and a 0 bit indicating no connection. With bit 0 being the least significant bit:
@@ -311,19 +309,6 @@ For the color information, clients SHOULD interpret the following values special
 
 Servers SHOULD restrict the colors in their messages to the range [0,5] except as noted below. When using the unoccupied shape, servers SHOULD use the color 0. When using the color 0, servers SHOULD use the unoccupied shape.
 
-A ***pill*** describes a collection of cells that the client can manipulate (e.g. by moving or rotating it). A ***pill shape*** is just like a pill, except its color information is interpreted differently (more on this in a moment). For uniformity, many types will demand that a nested list will have a certain class of element *clipped*. This means that there is at least one element outside of that class in the first row, and at least one element outside of that class in the first column. That is, the list must be nonempty, the first element of the list must contain an element not in the class, and there must be an element (which is itself a list) with a first element that is not in the class.
-
-| Type name | Variant | Tag | Fields | Constraints
-| --------- | ------- | --- | ------ | -----------
-| **pill**
-| | `content` | `0`
-| | | | **[[cell]]** | unoccupied cells clipped
-| **pill shape**
-| | `shape` | `0`
-| | | | **[[cell]]** | unoccupied cells clipped; the recommendation that servers restrict colors to [0,5] does not apply to these cells
-
-The outer list of cells should be interpreted as varying along the x axis, with earlier elements being at lower x coordinates; similarly, each inner list should be interpreted as varying along the y axis, with earlier elements being at lower y coordinates.
-
 It will often be convenient to have a notion of ***point*** and ***vector***. These will always be 2D versions of their math counterparts, and will have the same representation as each other as abstract values; the distinction between them is semantic, with a **point** representing an absolute position in the 2D space and a **vector** representing an offset or motion.
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
@@ -337,13 +322,87 @@ It will often be convenient to have a notion of ***point*** and ***vector***. Th
 | | | | **i64** | | *x* offset
 | | | | **i64** | | *y* offset
 
-A ***pill motion*** describes how to change a pill that's under control; it includes components for motion and rotation. *Forcing* is when a particular movement is required every so often (also called "gravity" when the force direction is down).
+When talking about pills, sometimes it is important to talk only about the *content* of the pill — the cells it has, given in relation to a local origin — and sometimes it is more relevant to talk about a located version that also says where on the board the pill should be rendered. With that in mind, a ***pill content*** describes a collection of cells that the client can manipulate (e.g. by moving or rotating it), while a ***pill*** is the located version.
+
+For uniformity, many types will demand that a nested list will have a certain class of element *clipped*. This means that there is at least one element outside of that class in the first row, and at least one element outside of that class in the first column. That is, the list must be nonempty, the first element of the list must contain an element not in the class, and there must be an element (which is itself a list) with a first element that is not in the class.
+
+| Type name | Variant | Tag | Fields | Constraints | Meaning
+| --------- | ------- | --- | ------ | ----------- | -------
+| **pill content**
+| | `content` | `0`
+| | | | **[[cell]]** | unoccupied cells clipped
+| **pill**
+| | `pill` | `0`
+| | | | **point** | | the location of the pill's local origin on a board
+| | | | **pill content**
+
+The outer list of lists should be interpreted as varying along the x axis, with earlier elements being at lower coordinates; similarly, each inner list of cells should be interpreted as varying along the y axis, with earlier elements being at lower coordinates.
+
+A ***board*** describes the backdrop on which an individual player's game is taking place.
+
+| Type name | Variant | Tag | Fields | Constraints | Meaning
+| --------- | ------- | --- | ------ | ----------- | -------
+| **board**
+| | `board` | `0`
+| | | | **i64** | positive | board width
+| | | | **i64** | positive | board height
+| | | | **[[cell]]** | outer list must have length equal to first field; all inner lists must have the length equal to second field | board content
+
+The terms *in-bounds* and *out-of-bounds* are used in the obvious way to relate **point**s and **board**s. The **point** `(`*x*`,` *y*`)` is in-bounds for `board(`*w*`,` *h*`,` *c*`)` if 0≤*x*<*w* and 0≤*y*<*h* and out-of-bounds otherwise.
+
+Similarly to **pill content**, the content of the board should be interpreted with the outer list varying along the x axis, starting at coordinate 0 and increasing, while each inner list should be interpreted as varying along the y axis, starting at coordinate 0 and increasing.
+
+Individual player's clients are always in one of two states: either there is a pill currently under the player's control, or they are watching an animation and waiting for the next pill to be controllable. Although clients are locally responsible for moving the pill, they are required to prove that a pill can actually be placed where they claim it currently is. This is manifested by giving the history of moves since the pill came under their control.
+
+| Type name | Variant | Tag | Fields | Constraints | Meaning
+| --------- | ------- | --- | ------ | ----------- | -------
+| **control**
+| | `wait` | `0`
+| | `control` | `1`
+| | | | **i64** | non-negative | the first frame on which the player had control of their latest pill
+| | | | **pill** | | the starting pill placed under player control
+| | | | **{i64: string}** | keys must be non-negative | the moves made by the player; keys are frame offsets from the first field
+
+There is rudimentary support for in-game communication. It seems unreasonable to expect players to type during the game; additionally, there are some common messages that clients may want to interpret specially, such as by playing a sound effect. To accommodate these two concerns, besides free-form text, there are special message forms for a few selected emotions.
+
+| Type name | Variant | Tag | Fields | Constraints | Meaning
+| --------- | ------- | --- | ------ | ----------- | -------
+| **message content**
+| | `text` | `0`
+| | | | **string**
+| | `impressed` | `1`
+| | `proud` | `2`
+| | `bored` | `3`
+| **message**
+| | `message` | `0`
+| | | | **i64** | | frame the message was sent
+| | | | **string** | | sending player
+| | | | **message content**
+
+Like most languages, this one has booleans.
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
 | **bool**
 | | `false` | `0`
 | | `true` | `1`
+
+### Movement rules
+
+#### Types
+
+ A ***pill shape*** is just like a **pill content**, except its color information is interpreted differently (more on this in a moment).
+
+| Type name | Variant | Tag | Fields | Constraints
+| --------- | ------- | --- | ------ | -----------
+| **pill shape**
+| | `shape` | `0`
+| | | | **[[cell]]** | unoccupied cells clipped; the recommendation that servers restrict colors to [0,5] does not apply to these cells
+
+A ***pill motion*** describes how to change a pill that's under control; it includes components for motion and rotation. *Forcing* is when a particular movement is required every so often (also called "gravity" when the force direction is down).
+
+| Type name | Variant | Tag | Fields | Constraints | Meaning
+| --------- | ------- | --- | ------ | ----------- | -------
 | **pill motion**
 | | `variant` | `0`
 | | | | **[vector]** | | spaces on the board that must be in-bounds and unoccupied for this variant to apply
@@ -370,7 +429,7 @@ Before explaining in detail the meaning of each field, it is instructive to see 
 
 #### Worked example
 
-Consider moving a horizontal pill to the left. The client needs to check that the two spaces where the pill will end up are unoccupied; those two spaces are the current origin and one space to the left of it. The vectors that represent that are `[vector(0,0), vector(-1,0)]`. If they're open, the pill should move one space left, by `vector(-1,0)`. The shape will remain unchanged. In a moment, this motion is going to be placed in a dictionary with `shape([[cell(1,1)], [cell(2,2)]])` as the key. The meaning of that shape will be explained then, but for the meantime, to keep the shape unchanged we'll copy that value into the third field. This means we have the following **pill motion**:
+Consider moving a horizontal pill to the left. The client needs to check that the two spaces where the pill will end up are unoccupied; those two spaces are the current origin and one space to the left of it. The vectors that represent that are `[vector(0,0), vector(-1,0)]`. If they're open, the pill should move one space left, by `vector(-1,0)`. The content will remain unchanged. In a moment, this motion is going to be placed in a dictionary with `shape([[cell(1,1)], [cell(2,2)]])` as the key. The meaning of that shape will be explained then, but for the meantime, to keep the content unchanged we'll copy that shape into the third field. This means we have the following **pill motion**:
 
     variant(
         , [vector(0, 0), vector(-1, 0)]
@@ -388,11 +447,11 @@ For this moveset, we'll be maintaining the invariant that the locations of the c
 
 There are no other alternative ways to interpret a left movement of a horizontal pill, so this is the only variant that will be listed in the **pill motion**.
 
-This kind of movement should only be considered when the pill is horizontal to begin with. The server indicates this by putting the variant above in a dictionary, with a key describing horizontal pills. A horizontal pill will have shape information of `1` (meaning "connect in the positive x direction (to the right)") at the pill origin, and shape information of `2` (meaning "connect in the negative x direction (to the left)") just to the right of the pill origin. What color information will the pill have? While it would be possible to have the protocol demand separate movement rules for each possible coloring of a pill shape, this would lead to a great deal of redundancy. So instead, the pill shape will use some arbitrary colors, all different. If the shape in the movement rule matches the shape of the current pill, the client will remember which movement rule color corresponds to which actual color. For example, consider the following **pill shape**:
+This kind of movement should only be considered when the pill is horizontal to begin with. The server indicates this by putting the variant above in a dictionary, associated with a key describing horizontal pills. A horizontal pill will have shape information of `1` (meaning "connect in the positive x direction (to the right)") at the pill origin, and shape information of `2` (meaning "connect in the negative x direction (to the left)") just to the right of the pill origin. What color information will the pill have? While it would be possible to have the protocol demand separate movement rules for each possible coloring of a pill shape, this would lead to a great deal of redundancy. So instead, the pill shape will use some arbitrary colors, all different. If the shape in the movement rule matches the shape of the current pill, the client will remember which movement rule color corresponds to which actual color. For example, consider the following **pill shape**:
 
     shape([[cell(1,10)],[cell(2,20)]])
 
-If the actual **pill** has yellow in its left half and red in its right half, it is:
+If the actual **pill content** has yellow in its left half and red in its right half, it is:
 
     content([[cell(1,3)],[cell(2,2)]])
 
@@ -406,9 +465,9 @@ Describing how to move a vertical pill to the left follows a very similar struct
         , shape([[cell(4, 1), cell(8, 2)]])
         )
 
-There are three fields left to complete the description of the rule for moving a pill to the left. Forcing will be discussed further below; for now, a simple empty list will do for the first field. The server can put `0` for the automatic repeat field to indicate that clients should only move pills to the left once in each frame; also, bumping up against a virus or the edge of the board is fine, so it will also put `0` in the deadly field. This leads to a completed **movement rule**:
+There are three fields left to complete the description of the rule for moving a pill to the left. Forcing will be discussed further below; for now, a simple empty list will do for the first field. The server can put `false()` for the automatic repeat field to indicate that clients should only move pills to the left once in each frame; also, bumping up against a virus or the edge of the board is fine, so it will also put `false()` in the deadly field. This leads to a completed **movement rule**:
 
-    movement([], 0, 0, {
+    movement([], false(), false(), {
         , shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
             , [vector(-1, 0)]
             , vector(-1, 0)
@@ -424,7 +483,7 @@ There are three fields left to complete the description of the rule for moving a
 Each motion requires a name. Moving left would conventionally be given the name `"-x"`. If moving left were the only action available to clients, then the server might send the following **movement rules**:
 
     movements([], {
-        , "-x": movement([], 0, 0, {
+        , "-x": movement([], false(), false(), {
             , shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
                 , [vector(-1, 0), vector(-1, 1)]
                 , vector(-1, 0)
@@ -448,7 +507,7 @@ Rotations are handled by having the pill shape in a rule's dictionary not match 
             )]
     }
 
-Note that the result shape information describes a vertical pill. The color information is also worth some attention. The result shape uses color `2` — that is, whatever color was in the right half of the original horizontal pill — for its lower half, and `1` — the color of the original left half — for its upper half.
+Even though the key has shape information describing a horizontal pill, the result shape information describes a vertical pill. The color information is also worth some attention. The result shape uses color `2` — that is, whatever color was in the right half of the original horizontal pill content — for its lower half, and `1` — the color of the original left half — for its upper half.
 
 Kicks are handled by having multiple variants listed. For example, rotating clockwise from vertical to horizontal might look like this:
 
@@ -469,9 +528,9 @@ Kicks are handled by having multiple variants listed. For example, rotating cloc
 
 When there are multiple variants, they are attempted in order until one succeeds. (If none succeed, the motion fails, and the pill remains unchanged.)
 
-A game that only had the motions described so far would be boring, not only because you could only move left and rotate clockwise, but also because the pill would never lock in place! To accomodate that, the server SHOULD include at least one movement rule with its deadly field set to `1`. In NES Dr. Mario, this is the down movement. This is conventionally called `"-y"`, so the serve might send this as part of its movement rules dictionary:
+A game that only had the motions described so far would be boring, not only because you could only move left and rotate clockwise, but also because the pill would never lock in place! To accomodate that, the server SHOULD include at least one movement rule with its deadly field set to `true()`. In NES Dr. Mario, this is the down movement. This is conventionally called `"-y"`, so the server might send this as part of its movement rules dictionary:
 
-    { "-y": movement([], 0, 1, {
+    { "-y": movement([], false(), true(), {
         , shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
             , [vector(0, -1), vector(1, -1)]
             , vector(0, -1)
@@ -485,9 +544,9 @@ A game that only had the motions described so far would be boring, not only beca
         })
     }
 
-If the server wanted to allow hard drop for this game, it could include this as part of its dictionary instead; the only difference is that the first field of the **movement rule** is `1`:
+If the server wanted to allow hard drop for this game, it could include this as part of its dictionary instead; the only difference is that the second field of the **movement rule** is `true()`:
 
-    { "-y": movement([], 1, 1, {
+    { "-y": movement([], true(), true(), {
         , shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
             , [vector(0, -1), vector(1, -1)]
             , vector(0, -1)
@@ -505,13 +564,13 @@ Some moves can be forced on the player even if they do not want to take them. Fo
 
     movements([force("-y", 14)], {})
 
-(For brevity, the actual dictionary describing all the movement rules has been elided.)
+(For brevity, the full dictionary describing all the movement rules has been elided.)
 
-The NES famously allows the player to move left twice by doing a left move and a rotation at the same time. Such a rule could be described by including rules for `"-x+θ"` and `"-x-θ"` with modified occupancy checks and origin offsets for vertical pills. For the purposes of forcing, such compound moves, like a down-clockwise move, may be intended to qualify, resetting the frame counter for that kind of forcing. This can be indicated using the first field of the associated **movement rule**, as in:
+The NES famously allows the player to move left twice by doing a left move and a rotation at the same time. Such a rule could be described by including rules for `"-x+θ"` and `"-x-θ"` with modified occupancy checks and origin offsets for vertical pills. For the purposes of forcing, some compound moves, like a down-clockwise move, may be intended to qualify as another kind of move (in this case down), resetting the frame counter for that kind of forcing. This can be indicated using the first field of the associated **movement rule**, as in:
 
-    { "-y-θ": movement(["-y"], 0, 1, {}) }
+    { "-y-θ": movement(["-y"], false(), true(), {}) }
 
-Each movement always resets its own forcing counter, so the server MAY NOT include it in the list, as is done here.
+Each movement always resets its own forcing counter, so the server MAY NOT include it in the list, as is done frequently above.
 
 The attentive reader may have noticed that no mention has been made thus far of DAS rules. As control is client-side, and this is a mechanism for selecting which controls the player wants to send, all decisions about how to handle DAS are left to individual clients.
 
@@ -519,15 +578,13 @@ The attentive reader may have noticed that no mention has been made thus far of 
 
 While a pill is being maneuvered, the state that the client must keep track of has these components:
 
-* a **pill** *s* (mnemonic: shape) that is currently being maneuvered by the player
+* a **pill content** *c* that is currently being maneuvered by the player
 * a **point** *p* that gives the location of the pill origin (which is always the first element of the first element) on the board
 * a **[force]** *f*, distinct from the **[force]** available in the **movement rules**, describing the current number of frames the player has before various kinds of moves are forced on them
 
 Besides the state, which is updated while maneuvering the pill, there is also a **board** *b* and **movement rules** *m* that remain the same throughout. The main information needed from *b* is which points are unoccupied and which points are out-of-bounds, while the movement rules describe what kinds of maneuvers are available on each frame.
 
-(TODO: make sure all the bold stuff above has already been defined, make sure "in-bounds" for a board has been defined)
-
-The state is initialized by the server, which reports *s* and *p* to the client, with the initial value for *f* being a copy of the **[force]** available in *m*.
+The state is initialized by the server, which reports *c* and *p* to the client, with the initial value for *f* being a copy of the **[force]** available in *m*.
 
 The state is updated on each frame. Each frame update is composed of exactly one *forcing update*, up to one optional *motion update* selected by the player, and an arbitrarily long sequence of motion updates caused by the forcing update. The updates occur in that order.
 
@@ -537,67 +594,67 @@ When a **force** in *f* is *reset*, it is replaced (at the same position) by a f
 
 In the forcing update, each **i64** in *f* is decremented by one, then reset if needed by the player's selected movement (see below). If the **i64** is under `0` after both of those changes, two followup actions happen.
 
-* A motion update for the **string** it's associated with (and no repetition, i.e. `0`) is scheduled for after the player selects their motion update (if any). When multiple **force**s drop under `0` simultaneously, their motion updates occur in the same order as they appear in *f*.
+* A motion update for the **string** it's associated with (and no repetition, i.e. `false()`) is scheduled for after the player's selected motion update (if any). When multiple **force**s drop under `0` simultaneously, their motion updates occur in the same order as they appear in *f*.
 * The **force** is reset.
 
 When the player selects a movement, every **force** with an identical **string** is reset. Additionally, if that movement is associated with a **movement rule** in *m*, then every **force** with a **string** listed in the movement rule's **[string]** field is reset.
 
 ##### Motion update
 
-Each motion update is identified by a movement, that is, **string** key into the dictionary in *m*, and a **bool** indicating whether to repeat the motion. A motion update may *succeed* or *fail*. If the movement **string** is not in *m*'s dictionary, the motion update is considered to succeed without changing the state at all. (A rule for failing without changing the state can be created by giving an empty dictionary in a **movement rule**.)
+Each motion update is identified by a movement, that is, **string** key into the dictionary in *m*, and a **bool** indicating whether to repeat the motion. A motion update may *succeed* or *fail*, though even failed motion updates may change the state. If the movement **string** is not in *m*'s dictionary, the motion update is considered to succeed without changing the state at all. (A rule for failing without changing the state can be created by giving an empty dictionary in a **movement rule**.)
 
 Once a **movement rule** has been identified, a *matching* process to choose a variant based on the current pill and surrounding spaces on the board begins. If a match is found, steps are taken, possibly in a loop.
 
 ###### Matching
 
-The *color-erased* version of a **cell** `cell(`*s*`, `*c*`)` is simply the contained shape information *s*. The color-erased versions of **pill**s and **pill shape**s are constructed by erasing the colors of all the contained **cell**s; the result in both cases has type **[[i64]]**. A **pill** matches a **pill shape** if their color-erased versions are equal. The server MUST guarantee that no two **pill shape** keys in a **movement rule** are equal after erasing color.
+The *color-erased* version of a **cell** `cell(`*shape*`, `*color*`)` is simply the contained shape information *shape*. The color-erased versions of **pill content**s and **pill shape**s are constructed by erasing the colors of all the contained **cell**s; the result in both cases has type **[[i64]]**. A **pill content** matches a **pill shape** if their color-erased versions are equal. The server MUST guarantee that no two **pill shape** keys in a **movement rule** are equal after erasing color.
 
 A **vector** *v* matches point *q* if *q*+*v* is in-bounds for *b* and *b* has an unoccupied shape at *q*+*v*. Recall that points both below *and* above the board are considered out-of-bounds. To emulate existing implementations, where pills may be placed halfway out-of-bounds one row above the top of the board, a server might report a slightly larger board with one extra row, start pills one row below the top, and never produce occupied spaces on the top row. A **pill motion** matches point *q* if all the **vector**s in its first field match *q*.
 
 The matching process then proceeds as follows:
 
-1. The keys of the dictionary in the **movement rule** are scanned for a shape that matches *s*.
+1. The keys of the dictionary in the **movement rule** are scanned for a shape that matches *c*.
 2. The first **pill motion** in the associated list that matches *p* is selected.
 
 ###### Stepping
 
-If either there is no matching key or no matching motion, the current step fails without changing the state. Otherwise, there is a match `variant(`*vs*`, `*v*`, `*s''*`)` under key *s'*. The position is updated by adding *v*, that is, *p* := *p*+*v*. The pill is updated by re-coloring *s''*:
+If either there is no matching key or no matching motion, the current step fails without changing the state. Otherwise, there is a match `variant(`*vs*`, `*v*`, `*s'*`)` under key *s*. The position is updated by adding *v*, that is, *p* := *p*+*v*. The pill content is updated by re-coloring *s'*:
 
-*s*<sub>*ij*</sub> := `cell(`*shape*(*s''*<sub>*ij*</sub>)`,`*color*(*s*<sub>*i'j'*</sub>)`)` iff *color*(*s'*<sub>*i'j'*</sub>) = *color*(*s''*<sub>*ij*</sub>)
+*c*<sub>*ij*</sub> := `cell(`*shape*(*s'*<sub>*ij*</sub>)`,`*color*(*c*<sub>*i'j'*</sub>)`)` iff *color*(*s*<sub>*i'j'*</sub>) = *color*(*s'*<sub>*ij*</sub>)
 
-(The *shape* and *color* functions here extract the appropriate field from their argument.) In other words, to recolor a cell from *s''*, look for the position in *s'* with the same color, then use the color from that position in the original pill *s*. An example is in order. Suppose we have:
+(The *shape* and *color* functions here extract the appropriate field from their argument.) In other words, to recolor a cell from *s'*, look for the position in *s* with the same color, then use the color from that position in the original pill content *c*. An example is in order. Suppose we have:
 
-*s* = `content([[cell(1,3)],[cell(2,2)]])`  
-*s'* = `shape([[cell(1,5)],[cell(2,6)]])`  
-*s''* = `shape([[cell(4,6),cell(8,5)]])`
+*c* = `content([[cell(1,3)],[cell(2,2)]])`  
+*s* = `shape([[cell(1,5)],[cell(2,6)]])`  
+*s'* = `shape([[cell(4,6),cell(8,5)]])`
 
-So *s* is a horizontal pill (shapes `1` and `2`) with yellow on its left half and red on its right half (colors `3` and `2`); *s'* is the shape of a horizontal pill that associates `5` with the color of the left half and color `6` with the right half; and *s''* is the shape of a vertical pill (shapes `4` and `8`) that uses whatever is associated with `6` for its bottom half and whatever is associated with `5` for its top half.
+So *c* has horizontal pill content (shapes `1` and `2`) with yellow on its left half and red on its right half (colors `3` and `2`); *s* is the shape of a horizontal pill that associates `5` with the color of the left half and color `6` with the right half; and *s'* is the shape of a vertical pill (shapes `4` and `8`) that uses whatever is associated with `6` for its bottom half and whatever is associated with `5` for its top half.
 
-The new pill after this step will have the same shape as *s''*:
+The new pill content after this step will have the same shape as *s'*:
 
-*s* := `content([[cell(4,`?`),cell(8,`?`)]])`
+*c* := `content([[cell(4,`?`),cell(8,`?`)]])`
 
-The bottom half asks for the color associated with `6`. Since `6` appears at row 0, column 1 in *s'*, we look at the color in row 0, column 1 of the original pill *s* and substitute it. That is color `2`, red, so the first ? can be filled in:
+The bottom half asks for the color associated with `6`. Since `6` appears at row 0, column 1 in *s*, we look at the color in row 0, column 1 of the original pill content *c* and substitute it. That is color `2`, red, so the first ? can be filled in:
 
-*s* := `content([[cell(4,2),cell(8,`?`)]])`
+*c* := `content([[cell(4,2),cell(8,`?`)]])`
 
-Similarly, the top half asks for the color associated with `5`. Since `5` appears at row 0, column 0 in *s'*, we look at the color in row 0, column 0 of the original pill *s* and substitute it. That is color `3`, yellow, so the second ? can be filled in:
+Similarly, the top half asks for the color associated with `5`. Since `5` appears at row 0, column 0 in *s*, we look at the color in row 0, column 0 of the original pill content *c* and substitute it. That is color `3`, yellow, so the second ? can be filled in:
 
-*s* := `content([[cell(4,2),cell(8,3)]])`
+*c* := `content([[cell(4,2),cell(8,3)]])`
 
-This new pill is a vertical pill with red on its bottom half and yellow on its top half, a clockwise rotation of the original.
+This new pill content is a vertical pill with red on its bottom half and yellow on its top half, a clockwise rotation of the original.
 
-Note that while the server is required to use unique colors everywhere in *s'*, there is no such restriction on *s''*; it could very well ask for the following step that has no counterpart in existing Dr. Mario implementations:
+Note that while the server is required to use unique colors everywhere in *s*, there is no such restriction on *s'*; it could very well ask for the following step that has no counterpart in existing Dr. Mario implementations:
 
-*s* = `content([[cell(1,3)],[cell(2,2)]])`  
-*s'* = `shape([[cell(1,5)],[cell(2,5)]])`  
-*s''* = `shape([[cell(4,6),cell(8,6)]])`
+*c* = `content([[cell(1,3)],[cell(2,2)]])`  
+*s* = `shape([[cell(1,5)],[cell(2,5)]])`  
+*s'* = `shape([[cell(4,6),cell(8,6)]])`
 
-Everything is the same here as in the previous example except that *s''* asks for `6` twice rather than one `6` and one `5`. The result would be:
+Everything is the same here as in the previous example except that *s'* asks for `6` twice rather than one `6` and one `5`. The result would be:
 
-*s* := `content([[cell(4,2),cell(8,2)]])`
+*c* := `content([[cell(4,2),cell(8,2)]])`
 
-This is a vertical pill that now has just one color, red, for both halves. There would be no way to recover a pill that is part red, part yellow from this state.
+This is the content of a vertical pill that now has just one color, red, for both halves. There would be no way to recover a pill that is part red, part yellow from this state.
 
 ###### Looping steps and terminating motion updates
 
