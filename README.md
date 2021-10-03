@@ -153,7 +153,7 @@ The type of patches for dictionaries then associates keys with edits, that is, a
 
 | *p*(*k*) | *d*(*k*) | *d*(*k'*) | *patch*(*d*,*p*)(*k*) |
 | -------- | -------- | --------- | --------------------- |
-| `delete()` | anything | | undefined |
+| `delete` | anything | | undefined |
 | `insert(`*v*`)` | anything | | *v* |
 | `modify(`*Δv*`)` | undefined | | undefined |
 | `modify(`*Δv*`)` | *v* | | *patch*(*v*,*Δv*) |
@@ -187,7 +187,7 @@ For each variant, we can construct a set of tuples. These tuples have one more e
 
 TODO: after nailing down the format of cells, come back and make this `new board` message more interesting (and its followup in the concrete value discussion)
 
-An abstract value is constructed by including the variant name, optional whitespace, and a comma-separated sequence of the abstract values for the fields surrounded by parentheses. For example, `pill(3, 7, 0, [1, 2])` describes a new pill of the default shape coming under control at position (3, 7) with blue and red halves, and `new board([[0, 0], [0, 0]])` describes the player being shown a blank 2⨯2 board.
+An abstract value is constructed by including the variant name, optional whitespace, and a comma-separated sequence of the abstract values for the fields surrounded by parentheses. For example, `pill(3, 7, 0, [1, 2])` describes a new pill of the default shape coming under control at position (3, 7) with blue and red halves, and `new board([[0, 0], [0, 0]])` describes the player being shown a blank 2⨯2 board. If a variant has no fields, the abstract value is allowed to be just the variant's name; for example, `true()` and `true` are abstract values representing the same thing.
 
 In the simplest case, a concrete value uses CBOR's array type, major type 4. The array contains a concrete value for a tag followed by concrete values for each of the associated variant's fields. For example, the abstract value `pill(3, 7, 0, [1, 2])` could be encoded to the 8-byte concrete value `'8500030700820102'`, and the abstract value `new board([[0, 0], [0, 0]])` could be encoded to the 9-byte concrete value `'820182820000820000'`.
 
@@ -208,13 +208,13 @@ Two exceptions are made to this pattern. First, if there is exactly one variant,
 | | `shape`  | `0`
 | |          | | **i64** | fits in an unsigned byte | an index into the sequence of available shapes
 
-The abstract value `just(3)` would use the normal pattern, and so might be encoded to the concrete value `'820103'`, say. But since `nothing()` doesn't have any fields, it would be a 1-element array with just the tag, and so is encoded not as an array but as the tag directly, meaning the concrete value `'00'` would be one possible corresponding concrete value.
+The abstract value `just(3)` would use the normal pattern, and so might be encoded to the concrete value `'820103'`, say. But since `nothing` doesn't have any fields, it would be a 1-element array with just the tag, and so is encoded not as an array but as the tag directly, meaning the concrete value `'00'` would be one possible corresponding concrete value.
 
-Like `nothing()`, the abstract values `black()` and friends have no fields, so the concrete values `'00'`, `'01'`, `'02'`, and `'03'` would be correct encodings of the variants of a color.
+Like `nothing`, the abstract values `black` and friends have no fields, so the concrete values `'00'`, `'01'`, `'02'`, and `'03'` would be correct encodings of the variants of a color.
 
 Since there is just one variant in the shape type, the abstract value `shape(3)` would not include the tag in its concrete value. Since there is just one field, this means there would be just one element if we were to use an array, and so we simply include the field directly. This means that `'03'` is an example of a correct concrete value for `shape(3)`.
 
-Contrast the concrete values for `shape(3)` and `just(3)`, which both have just one field; however, with `shape(3)` the tag is omitted because there are no other variants, while with `just(3)` there are other variants and so the tag is not omitted. Contrast also the concrete values for `shape(3)` and `yellow()`, which are both bare values and not CBOR arrays; however, because the color type has many variants, the bare value must be a tag, and because the shape type has a single variant, the bare value must be a field.
+Contrast the concrete values for `shape(3)` and `just(3)`, which both have just one field; however, with `shape(3)` the tag is omitted because there are no other variants, while with `just(3)` there are other variants and so the tag is not omitted. Contrast also the concrete values for `shape(3)` and `yellow`, which are both bare values and not CBOR arrays; however, because the color type has many variants, the bare value must be a tag, and because the shape type has a single variant, the bare value must be a field.
 
 The **shape** type described above is a case of particular interest. The rules described above mean that although **shape** is notionally distinct from **i64**, it nevertheless has the same representations in concrete values; that is, there is no overhead associated with introducing extra levels of aliasing in this way.
 
@@ -255,7 +255,7 @@ The *patch* implementation does the obvious thing. When given a collection of fi
 
 *patch*(*v*, `replace(`*v'*`)`) = *v'*  
 *patch*(*V*`(`*x*<sub>0</sub>`,` ...`,` *x*<sub>*n*</sub>`)`, `Δ`*V*`(`*p*<sub>0</sub>`,` ...`,` *p*<sub>*n*</sub>`)`) = *V*`(`*patch*(*x*<sub>0</sub>`,` *p*<sub>0</sub>)`,` ...`,` *patch*(*x*<sub>*n*</sub>, *p*<sub>*n*</sub>)`)`  
-*patch*(*v*, *p*) = *v*        in all other cases (including when *p* = `no change()`)
+*patch*(*v*, *p*) = *v*        in all other cases (including when *p* = `no change`)
 
 # Rambling
 
@@ -465,9 +465,9 @@ Describing how to move a vertical pill to the left follows a very similar struct
         , shape([[cell(4, 1), cell(8, 2)]])
         )
 
-There are three fields left to complete the description of the rule for moving a pill to the left. Forcing will be discussed further below; for now, a simple empty list will do for the first field. The server can put `false()` for the automatic repeat field to indicate that clients should only move pills to the left once in each frame; also, bumping up against a virus or the edge of the board is fine, so it will also put `false()` in the deadly field. This leads to a completed **movement rule**:
+There are three fields left to complete the description of the rule for moving a pill to the left. Forcing will be discussed further below; for now, a simple empty list will do for the first field. The server can put `false` for the automatic repeat field to indicate that clients should only move pills to the left once in each frame; also, bumping up against a virus or the edge of the board is fine, so it will also put `false` in the deadly field. This leads to a completed **movement rule**:
 
-    movement([], false(), false(), {
+    movement([], false, false, {
         , shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
             , [vector(-1, 0)]
             , vector(-1, 0)
@@ -483,7 +483,7 @@ There are three fields left to complete the description of the rule for moving a
 Each motion requires a name. Moving left would conventionally be given the name `"-x"`. If moving left were the only action available to clients, then the server might send the following **movement rules**:
 
     movements([], {
-        , "-x": movement([], false(), false(), {
+        , "-x": movement([], false, false, {
             , shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
                 , [vector(-1, 0), vector(-1, 1)]
                 , vector(-1, 0)
@@ -528,9 +528,9 @@ Kicks are handled by having multiple variants listed. For example, rotating cloc
 
 When there are multiple variants, they are attempted in order until one succeeds. (If none succeed, the motion fails, and the pill remains unchanged.)
 
-A game that only had the motions described so far would be boring, not only because you could only move left and rotate clockwise, but also because the pill would never lock in place! To accomodate that, the server SHOULD include at least one movement rule with its deadly field set to `true()`. In NES Dr. Mario, this is the down movement. This is conventionally called `"-y"`, so the server might send this as part of its movement rules dictionary:
+A game that only had the motions described so far would be boring, not only because you could only move left and rotate clockwise, but also because the pill would never lock in place! To accomodate that, the server SHOULD include at least one movement rule with its deadly field set to `true`. In NES Dr. Mario, this is the down movement. This is conventionally called `"-y"`, so the server might send this as part of its movement rules dictionary:
 
-    { "-y": movement([], false(), true(), {
+    { "-y": movement([], false, true, {
         , shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
             , [vector(0, -1), vector(1, -1)]
             , vector(0, -1)
@@ -544,9 +544,9 @@ A game that only had the motions described so far would be boring, not only beca
         })
     }
 
-If the server wanted to allow hard drop for this game, it could include this as part of its dictionary instead; the only difference is that the second field of the **movement rule** is `true()`:
+If the server wanted to allow hard drop for this game, it could include this as part of its dictionary instead; the only difference is that the second field of the **movement rule** is `true`:
 
-    { "-y": movement([], true(), true(), {
+    { "-y": movement([], true, true, {
         , shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
             , [vector(0, -1), vector(1, -1)]
             , vector(0, -1)
@@ -568,7 +568,7 @@ Some moves can be forced on the player even if they do not want to take them. Fo
 
 The NES famously allows the player to move left twice by doing a left move and a rotation at the same time. Such a rule could be described by including rules for `"-x+θ"` and `"-x-θ"` with modified occupancy checks and origin offsets for vertical pills. For the purposes of forcing, some compound moves, like a down-clockwise move, may be intended to qualify as another kind of move (in this case down), resetting the frame counter for that kind of forcing. This can be indicated using the first field of the associated **movement rule**, as in:
 
-    { "-y-θ": movement(["-y"], false(), true(), {}) }
+    { "-y-θ": movement(["-y"], false, true, {}) }
 
 Each movement always resets its own forcing counter, so the server MAY NOT include it in the list, as is done frequently above.
 
@@ -594,7 +594,7 @@ When a **force** in *f* is *reset*, it is replaced (at the same position) by a f
 
 In the forcing update, each **i64** in *f* is decremented by one, then reset if needed by the player's selected movement (see below). If the **i64** is under `0` after both of those changes, two followup actions happen.
 
-* A motion update for the **string** it's associated with (and no repetition, i.e. `false()`) is scheduled for after the player's selected motion update (if any). When multiple **force**s drop under `0` simultaneously, their motion updates occur in the same order as they appear in *f*.
+* A motion update for the **string** it's associated with (and no repetition, i.e. `false`) is scheduled for after the player's selected motion update (if any). When multiple **force**s drop under `0` simultaneously, their motion updates occur in the same order as they appear in *f*.
 * The **force** is reset.
 
 When the player selects a movement, every **force** with an identical **string** is reset. Additionally, if that movement is associated with a **movement rule** in *m*, then every **force** with a **string** listed in the movement rule's **[string]** field is reset.
@@ -658,15 +658,15 @@ This is the content of a vertical pill that now has just one color, red, for bot
 
 ###### Looping steps and terminating motion updates
 
-If the motion update's **bool** is `false()`, a single step is taken, and its status (success or failure), is used as the status of the entire motion update.
+If the motion update's **bool** is `false`, a single step is taken, and its status (success or failure), is used as the status of the entire motion update.
 
-If the motion update's **bool** is `true()`, but the **movement rule**'s second field is `false()`, indicating that this motion cannot be automatically repeated, the motion update fails without changing the state.
+If the motion update's **bool** is `true`, but the **movement rule**'s second field is `false`, indicating that this motion cannot be automatically repeated, the motion update fails without changing the state.
 
-If the motion update's **bool** is `true()` and the **movement rule**'s second field is `true()`, then the state is repeatedly stepped according to the current rule, until either
+If the motion update's **bool** is `true` and the **movement rule**'s second field is `true`, then the state is repeatedly stepped according to the current rule, until either
 
 * A step fails. In this case, the state from just before the failed step is kept as the new state, and the motion update fails. OR
 * A state is repeated, and so stepping has entered an infinite loop. In this case, the state just before the repeated one is kept as the new state, and the motion update succeeds.
 
-If the motion update succeeds, or the motion update fails and the **movement rule**'s third field is `false()`, indicating that failures are not deadly, nothing special happens. The pill remains under player control, and the client SHOULD advance to the next frame at an appropriate time.
+If the motion update succeeds, or the motion update fails and the **movement rule**'s third field is `false`, indicating that failures are not deadly, nothing special happens. The pill remains under player control, and the client SHOULD advance to the next frame at an appropriate time.
 
-If the motion update fails and the **movement rule**'s third field is `true()`, indicating that failures should end control of the pill, the current state is finalized. The client MUST report its movement history to the server, and the server will use the final state to decide what updates, if any, must be made in the larger game state context.
+If the motion update fails and the **movement rule**'s third field is `true`, indicating that failures should end control of the pill, the current state is finalized. The client MUST report its movement history to the server, and the server will use the final state to decide what updates, if any, must be made in the larger game state context.
