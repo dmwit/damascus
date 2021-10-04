@@ -665,9 +665,7 @@ This is the content of a vertical pill that now has just one color, red, for bot
 
 ###### Looping steps and terminating motion updates
 
-If the motion update's **bool** is `false`, a single step is taken, and its status (success or failure), is used as the status of the entire motion update.
-
-If the motion update's **bool** is `true`, but the **movement rule**'s second field is `false`, indicating that this motion cannot be automatically repeated, the motion update fails without changing the state.
+If the motion update's **bool** is `false` (requesting a single step) or the **movement rule**'s second field is `false` (indicating that this motion cannot be automatically repeated), a single step is taken, and its status (success or failure), is used as the status of the entire motion update.
 
 If the motion update's **bool** is `true` and the **movement rule**'s second field is `true`, then the state is repeatedly stepped according to the current rule, until either
 
