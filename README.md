@@ -5,7 +5,7 @@ This document describes an application-level server/client protocol for playing 
 There are several occasionally-conflicting design goals for this protocol. Roughly in order from most important to least important, the protocol should be:
 
 * **Robust.** With one player in Canada connected over a satellite connection, one in the Netherlands connected via a crowded, public cafe wireless connection, and a server in the United States, lag and lag spikes are a fact of life. Temporary disconnections also happen from time to time. The game should be fun and playable despite this. Lag issues are addressed by making all controls live client-side, and by giving both the server and clients ways to inform their counterparts of predicted events before they happen. Conditional predictions (e.g. conditioned on where a pill is locked) are especially important for the client, so that it can begin rendering the outcome of a play without waiting for a complete server-client roundtrip. To make disconnections less devastating, clients can request the full game state at any time, and the server's behavior when there are multiple outstanding connections from a single client is specified.
-* **Client-biased.** It is expected that there will be just one implementation of the server part of the protocol, but potentially many implementations of the client part of the protocol. For example, Linux-based, Windows-based, web-based, and AI-backed clients all seem like possibilities. Therefore, to the extent possible, all game logic should be pushed to the server. Clients should not need to reimplement clearing rules, trash gravity, random board generation, etc.
+* **Client-biased.** It is expected that there will be just one implementation of the server part of the protocol, but potentially many implementations of the client part of the protocol. For example, Linux-based, Windows-based, web-based, and AI-backed clients all seem like possibilities. Therefore, to the extent possible, all game logic should be pushed to the server. Clients should not need to reimplement clearing rules, trash gravity, random board generation, conflict resolution, etc.
 * **Flexible.** Historically, there have been many different Dr. Mario-like games with varying game rules. Implementations have varied the number of players, available moves, win conditions, pill shapes, laws of gravity, and more. The protocol should be generic enough that it can support these and other variant ideas without changes to the protocol. (When somebody figures out what Dr. Mario 99 should be like, hopefully this protocol is suitable!) This is achieved by many of the same mechanisms as being robust and client-based: pushing all game-logic to the server means that variants need only be implemented once in the server implementation, and not replicated by all clients; and giving the server strong prediction capabilities allows clients to know what will happen even if its author has never seen this particular game variant before. Additionally, since controls are both client-side and one of the things varied, the protocol includes a flexible language for the server to communicate control rules to the client.
 * **Frugal.** Many players still connect to the Internet with low-bandwidth connections. To support these players, the wire format for the protocol should be compact, fitting the most common messages in as few bytes as possible. Consequently, the protocol defines a high-level data model that includes a concept of "edits" for each kind of data, so that most of the game state can be omitted from most messages, and specifies a low-overhead binary wire format.
 * **Complete.** Besides simply playing a game, players will likely expect to be able to perform a number of supporting and related actions. They will want to discover other players who are interested in a game right now (or be informed when one becomes available); negotiate the variant that they will be playing; coordinate the exact timing of the game start so that all players are ready when that happens; play with the same people and game rules multiple times when everybody involved is having fun; abort games early by resigning or demanding a resignation from a non-responsive opponent; watch replays of previously finished games; etc. The protocol will eventually support a wide range of such flows, but see below for caveats about this early version.
@@ -34,6 +34,8 @@ If you have programmed in any modern language, you can almost certainly learn ev
 On a first read, you might want to skip to the next section, and come back for a more careful review once you need to know the details of patches or encoding into bytes.
 
 In the descriptions of abstract values, the term *whitespace* means a text containing only `\u9\` (tab), `\u10\` (newline), or `\u32\` (space). A *comma-separated sequence* refers to text that contains a sequence of some other specified abstract values with commas in between. Comma-separated sequences are allowed to have arbitrarily many preceding commas, trailing commas, and whitespace around the commas. For example, ` ,, , 35,"35"	` and `,35,"35",` are each a comma-separated sequence of abstract values `35` and `"35"`, but `35,,"35"` is not.
+
+TODO: tabular representations? basic idea: CBOR lists of any type other than **i64** can start with some **i64** elements giving table dimensions; the CBOR list is then chunked up according to those dimensions before the rest of the decoding process takes place; think carefully about how `0`s fit into this; think carefully about how custom types that are sometimes just a tag (i.e. an **i64**) fit into this; think a bit about whether custom types should unpack their fields
 
 The remaining sections of this document will use abstract values exclusively when talking about inhabitants of a type's interpretation. The remaining subsections of this section will occasionally blur the distinction between a type's name and its interpretation.
 
@@ -316,7 +318,7 @@ For the color information, clients SHOULD interpret the following values special
 
 Servers SHOULD restrict the colors in their messages to the range [0,5] except as noted below. When using the unoccupied shape, servers SHOULD use the color 0. When using the color 0, servers SHOULD use the unoccupied shape.
 
-It will often be convenient to have a notion of ***point*** and ***vector***. These will always be 2D versions of their math counterparts, and will have the same representation as each other as abstract values; the distinction between them is semantic, with a **point** representing an absolute position in the 2D space and a **vector** representing an offset or motion.
+It will often be convenient to indicate a position (especially with relation to a board). These will always be 2D positions.
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
@@ -324,10 +326,6 @@ It will often be convenient to have a notion of ***point*** and ***vector***. Th
 | | `point` | `0`
 | | | | **i64** | | *x* coordinate
 | | | | **i64** | | *y* coordinate
-| **vector**
-| | `vector` | `0`
-| | | | **i64** | | *x* offset
-| | | | **i64** | | *y* offset
 
 When talking about pills, sometimes it is important to talk only about the *content* of the pill — the cells it has, given in relation to a local origin — and sometimes it is more relevant to talk about a located version that also says where on the board the pill should be rendered. With that in mind, a ***pill content*** describes a collection of cells that the client can manipulate (e.g. by moving or rotating it), while a ***pill*** is the located version.
 
@@ -351,11 +349,9 @@ A ***board*** describes the backdrop on which an individual player's game is tak
 | --------- | ------- | --- | ------ | ----------- | -------
 | **board**
 | | `board` | `0`
-| | | | **i64** | positive | board width
-| | | | **i64** | positive | board height
-| | | | **[[cell]]** | outer list must have length equal to first field; all inner lists must have the length equal to second field | board content
+| | | | **[[cell]]** | nonempty; all elements must have the same length | board content
 
-The terms *in-bounds* and *out-of-bounds* are used in the obvious way to relate **point**s and **board**s. The **point** `(`*x*`,` *y*`)` is in-bounds for `board(`*w*`,` *h*`,` *c*`)` if 0≤*x*<*w* and 0≤*y*<*h* and out-of-bounds otherwise.
+The *width* of a board is the length of the outer list, and its *height* is the length of an inner list. The terms *in-bounds* and *out-of-bounds* are used in the obvious way to relate **point**s and **board**s. The **point** `(`*x*`,` *y*`)` is in-bounds for a board with width *w* and height *h* if 0≤*x*<*w* and 0≤*y*<*h* (and out-of-bounds otherwise).
 
 Similarly to **pill content**, the content of the board should be interpreted with the outer list varying along the x axis, starting at coordinate 0 and increasing, while each inner list should be interpreted as varying along the y axis, starting at coordinate 0 and increasing.
 
@@ -380,11 +376,15 @@ There is rudimentary support for in-game communication. It seems unreasonable to
 | | `impressed` | `1`
 | | `proud` | `2`
 | | `bored` | `3`
+| | `joined` | `4`
+| | `departed` | `5`
 | **message**
 | | `message` | `0`
 | | | | **i64** | | frame the message was sent
 | | | | **string** | | sending player
 | | | | **message content**
+
+TODO: when describing the client message for sending messages to the server, suggest that servers SHOULD discard `joined` and `departed` messages
 
 Like most languages, this one has booleans.
 
@@ -412,8 +412,8 @@ A ***pill motion*** describes how to change a pill that's under control; it incl
 | --------- | ------- | --- | ------ | ----------- | -------
 | **pill motion**
 | | `variant` | `0`
-| | | | **[vector]** | | spaces on the board that must be in-bounds and unoccupied for this variant to apply
-| | | | **vector** | | how to move the origin of the pill
+| | | | **[Δpoint]** | | spaces on the board that must be in-bounds and unoccupied for this variant to apply
+| | | | **Δpoint** | | how to move the origin of the pill
 | | | | **pill shape** | | how to perform a rotation
 | **movement rule**
 | | `movement` | `0`
@@ -436,19 +436,19 @@ Before explaining in detail the meaning of each field, it is instructive to see 
 
 #### Worked example
 
-Consider moving a horizontal pill to the left. The client needs to check that the two spaces where the pill will end up are unoccupied; those two spaces are the current origin and one space to the left of it. The vectors that represent that are `[vector(0,0), vector(-1,0)]`. If they're open, the pill should move one space left, by `vector(-1,0)`. The content will remain unchanged. In a moment, this motion is going to be placed in a dictionary with `shape([[cell(1,1)], [cell(2,2)]])` as the key. The meaning of that shape will be explained then, but for the meantime, to keep the content unchanged we'll copy that shape into the third field. This means we have the following **pill motion**:
+Consider moving a horizontal pill to the left. The client needs to check that the two spaces where the pill will end up are unoccupied; those two spaces are the current origin and one space to the left of it. The vectors that represent that are `[Δpoint(0,0), Δpoint(-1,0)]`. If they're open, the pill should move one space left, by `Δpoint(-1,0)`. The content will remain unchanged. In a moment, this motion is going to be placed in a dictionary with `shape([[cell(1,1)], [cell(2,2)]])` as the key. The meaning of that shape will be explained then, but for the meantime, to keep the content unchanged we'll copy that shape into the third field. This means we have the following **pill motion**:
 
     variant(
-        , [vector(0, 0), vector(-1, 0)]
-        , vector(-1, 0)
+        , [Δpoint(0, 0), Δpoint(-1, 0)]
+        , Δpoint(-1, 0)
         , shape([[cell(1, 1)], [cell(2, 2)]])
         )
 
-For this moveset, we'll be maintaining the invariant that the locations of the cells in the current pill will always be unoccupied; so the server could choose to elide the `vector(0, 0)` occupancy-check, as in:
+For this moveset, we'll be maintaining the invariant that the locations of the cells in the current pill will always be unoccupied; so the server could choose to elide the `Δpoint(0, 0)` occupancy-check, as in:
 
     variant(
-        , [vector(-1, 0)]
-        , vector(-1, 0)
+        , [Δpoint(-1, 0)]
+        , Δpoint(-1, 0)
         , shape([[cell(1, 1)], [cell(2, 2)]])
         )
 
@@ -467,8 +467,8 @@ When matching that pill shape with this pill, the client will remember that shap
 Describing how to move a vertical pill to the left follows a very similar structure. The main difference here is that we check different positions for occupancy, and the shape information indicates vertical connections rather than horizontal ones.
 
     variant(
-        , [vector(-1, 0), vector(-1, 1)]
-        , vector(-1, 0)
+        , [Δpoint(-1, 0), Δpoint(-1, 1)]
+        , Δpoint(-1, 0)
         , shape([[cell(4, 1), cell(8, 2)]])
         )
 
@@ -476,13 +476,13 @@ There are three fields left to complete the description of the rule for moving a
 
     movement([], false, false, {
         , shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
-            , [vector(-1, 0)]
-            , vector(-1, 0)
+            , [Δpoint(-1, 0)]
+            , Δpoint(-1, 0)
             , shape([[cell(1, 1)], [cell(2, 2)]])
             )]
         , shape([[cell(4, 1), cell(8, 2)]]): [variant(
-            , [vector(-1, 0), vector(-1, 1)]
-            , vector(-1, 0)
+            , [Δpoint(-1, 0), Δpoint(-1, 1)]
+            , Δpoint(-1, 0)
             , shape([[cell(4, 1), cell(8, 2)]])
             )]
         })
@@ -492,13 +492,13 @@ Each motion requires a name. Moving left would conventionally be given the name 
     movements([], {
         , "-x": movement([], false, false, {
             , shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
-                , [vector(-1, 0), vector(-1, 1)]
-                , vector(-1, 0)
+                , [Δpoint(-1, 0), Δpoint(-1, 1)]
+                , Δpoint(-1, 0)
                 , shape([[cell(4, 1), cell(8, 2)]])
                 )]
             , shape([[cell(4, 1), cell(8, 2)]]): [variant(
-                , [vector(0, 0), vector(-1, 0)]
-                , vector(-1, 0)
+                , [Δpoint(0, 0), Δpoint(-1, 0)]
+                , Δpoint(-1, 0)
                 , shape([[cell(1, 1)], [cell(2, 2)]])
                 )]
             })
@@ -508,8 +508,8 @@ Rotations are handled by having the pill shape in a rule's dictionary not match 
 
     {
         shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
-            , [vector(0, 1)]
-            , vector(0, 0)
+            , [Δpoint(0, 1)]
+            , Δpoint(0, 0)
             , shape([[cell(4, 2), cell(8, 1)]])
             )]
     }
@@ -521,13 +521,13 @@ Kicks are handled by having multiple variants listed. For example, rotating cloc
     {
         shape([[cell(4, 1), cell(8, 2)]]): [
             , variant(
-                , [vector(1, 0)]
-                , vector(0, 0)
+                , [Δpoint(1, 0)]
+                , Δpoint(0, 0)
                 , shape([[cell(1, 1)], [cell(2, 2)]])
                 )
             , variant(
-                , [vector(-1, 0)]
-                , vector(-1, 0)
+                , [Δpoint(-1, 0)]
+                , Δpoint(-1, 0)
                 , shape([[cell(1, 1)], [cell(2, 2)]])
                 )
             ]
@@ -539,13 +539,13 @@ A game that only had the motions described so far would be boring, not only beca
 
     { "-y": movement([], false, true, {
         , shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
-            , [vector(0, -1), vector(1, -1)]
-            , vector(0, -1)
+            , [Δpoint(0, -1), Δpoint(1, -1)]
+            , Δpoint(0, -1)
             , shape([[cell(1, 1)], [cell(2, 2)]])
             )]
         , shape([[cell(4, 1), cell(8, 2)]]): [variant(
-            , [vector(0, -1)]
-            , vector(0, -1)
+            , [Δpoint(0, -1)]
+            , Δpoint(0, -1)
             , shape([[cell(4, 1), cell(8, 2)]])
             )]
         })
@@ -555,13 +555,13 @@ If the server wanted to allow hard drop for this game, it could include this as 
 
     { "-y": movement([], true, true, {
         , shape([[cell(1, 1)], [cell(2, 2)]]): [variant(
-            , [vector(0, -1), vector(1, -1)]
-            , vector(0, -1)
+            , [Δpoint(0, -1), Δpoint(1, -1)]
+            , Δpoint(0, -1)
             , shape([[cell(1, 1)], [cell(2, 2)]])
             )]
         , shape([[cell(4, 1), cell(8, 2)]]): [variant(
-            , [vector(0, -1)]
-            , vector(0, -1)
+            , [Δpoint(0, -1)]
+            , Δpoint(0, -1)
             , shape([[cell(4, 1), cell(8, 2)]])
             )]
         })
@@ -616,7 +616,7 @@ Once a **movement rule** has been identified, a *matching* process to choose a v
 
 The *color-erased* version of a **cell** `cell(`*shape*`, `*color*`)` is simply the contained shape information *shape*. The color-erased versions of **pill content**s and **pill shape**s are constructed by erasing the colors of all the contained **cell**s; the result in both cases has type **[[i64]]**. A **pill content** matches a **pill shape** if their color-erased versions are equal. The server MUST guarantee that no two **pill shape** keys in a **movement rule** are equal after erasing color.
 
-A **vector** *v* matches point *q* if *q*+*v* is in-bounds for *b* and *b* has an unoccupied shape at *q*+*v*. Recall that points both below *and* above the board are considered out-of-bounds. To emulate existing implementations, where pills may be placed halfway out-of-bounds one row above the top of the board, a server might report a slightly larger board with one extra row, start pills one row below the top, and never produce occupied spaces on the top row. A **pill motion** matches point *q* if all the **vector**s in its first field match *q*.
+A **Δpoint** *v* matches point *q* if *q*+*v* is in-bounds for *b* and *b* has an unoccupied shape at *q*+*v*. Recall that points both below *and* above the board are considered out-of-bounds. To emulate existing implementations, where pills may be placed halfway out-of-bounds one row above the top of the board, a server might report a slightly larger board with one extra row, start pills one row below the top, and never produce occupied spaces on the top row. A **pill motion** matches point *q* if all the **Δpoint**s in its first field match *q*.
 
 The matching process then proceeds as follows:
 
@@ -675,3 +675,28 @@ If the motion update's **bool** is `true` and the **movement rule**'s second fie
 If the motion update succeeds, or the motion update fails and the **movement rule**'s third field is `false`, indicating that failures are not deadly, nothing special happens. The pill remains under player control, and the client SHOULD advance to the next frame at an appropriate time.
 
 If the motion update fails and the **movement rule**'s third field is `true`, indicating that failures should end control of the pill, the current state is finalized. The client MUST report its movement history to the server, and the server will use the final state to decide what updates, if any, must be made in the larger game state context.
+
+### Predictions
+
+#### Server predictions
+
+#### Client predictions
+
+### Top-level state
+
+Each player is associated with a data structure that combines most of the information described in the section so far. A full history of messages sent is also included in the state.
+
+| Type name | Variant | Tag | Fields | Constraints | Meaning
+| --------- | ------- | --- | ------ | ----------- | -------
+| **player**
+| | `player`
+| | | `0`
+| | | | **i64** | | what frame they are on
+| | | | **board**
+| | | | **movement rules**
+| | | | **control**
+| **game**
+| | `game`
+| | | `0`
+| | | | **{string: player}**
+| | | | **[message]**
