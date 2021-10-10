@@ -14,9 +14,30 @@ There are several occasionally-conflicting design goals for this protocol. Rough
 
 Historically, software products succeed best when the feature set begins small, and grows only when the existing set has enjoyed some use (and the associated experimentation and bug-fixing). In the interest of helping this project succeed, therefore, this early version of the specification intentionally punts on being complete. It will describe only the part of the protocol involved in playing a single game from beginning to end. The framing that makes that usable — such as the ability for players and spectators to discover games and negotiate rules — will be omitted until at least one conforming server and one conforming client exist.
 
-# Typography
+# Conventions
+
+## Typography
 
 When defining a new term, the term's first use will be written with *italics*. Italics are also used for mathematical variables. Text strings are written in `monospace`. If the text contains strange characters, they may be escaped for clarity by surrounding a codepoint, written in decimal, with `\u` and `\`. For example, `my 🐕 is cute` and `my \u128021\ is cute` represent the same text. If a text contains a backslash followed by a "u", one or the other will always be escaped. Byte strings are written in `monospace` as an even-length sequence of hexadecimal digits surrounded by single quotes. For example, `'0cafe101'` represents a four-byte sequence with the bytes 12, 175, 225, and 1. That sequence will never be written as `'cafe101'`. To avoid ambiguity, all strings beginning with a single quote will have that single quote escaped; for example, `\u39\0cafe101'` represents a 9-character text which could be used to represent a byte sequence. Concrete type names are written in **bold**. ALL-CAPS PHRASES such as "MUST" and "MUST NOT" are used as described in RFCs 2119 and 8174.
+
+## Notation
+
+For any set *S*, its power set is denoted 𝒫*S*. For any function *f* ∈ *A* → 𝒫*B*, there is a corresponding power-set function ∪*f* ∈ 𝒫*A* → 𝒫*B* defined by taking the union of all of *f*'s outputs:
+
+∪*f*(*S*) = ⋃ { *f*(*a*) | *a* ∈ *S* }
+
+## Entities
+
+There are several kinds of entity that will be referred to in this specification:
+
+* A *server* is a central computer running a program that coordinates a game; it is in charge of deciding how the game state evolves and how to resolve timing conflicts.
+* A *player* is an agent that is making decisions in a game; typically this is a human, but an AI or Twitch channel's chat could also qualify.
+* A *spectator* is an agent that is observing a game; it is not actively participating in influencing the game state, but it may be making commentary or interacting with other players or spectators via non-game state.
+* A *user* is a player or spectator.
+* A *client* is a piece of software that serves as a conduit, transmitting user intents to a server and a server's decisions about how the game state is evolving to a user.
+* A *connection* is a communication channel between a server and client that can be used to exchange data.
+
+A server will typically be communicating with many different clients. A single server-client pair may have many connections, usually due to vagaries of Internet connectivity; for example, if a client briefly loses Internet access, when access is regained it may open a fresh connection to the server. This specification assumes that each client is associated with just one user; however, the converse is not assumed. If a single player would like to try to split their attention between multiple clients at once, well, that's their prerogative!
 
 # Data Model
 
@@ -27,8 +48,9 @@ Every message sent with the damascus protocol has a *type* that describes what v
 3. A set of human-readable text strings called *abstract values* that will be used to refer to elements of the interpretation in the remaining sections of this document.
 4. A set of compact, machine-readable byte strings called *concrete values*, each of which uniquely identifies an element of the interpretation.
 5. A separate *patch* type (and function) for edits that describe a way to transform a value.
+6. A *nondeterministic patch* type (and function) for edits that describe how to transform part of a value, without saying what changes, if any, should happen to other parts.
 
-Type names are given in parentheses after their subsubsection header. Concrete values are represented in CBOR format as described in RFC 8949. The patch type associated with type *T* can be referred to by Δ*T*. The meaning of patches is given by defining a function *patch* ∈ *T*⨯Δ*T* → *T* for each type.
+Type names are given in parentheses after their subsubsection header. Concrete values are represented in CBOR format as described in RFC 8949. The patch type associated with type *T* can be referred to by Δ*T*, and partial patches by Π*T*. The meaning of (nondeterministic) patches is given by defining functions *patch<sub>Δ</sub>* ∈ *T*⨯Δ*T* → *T* and *patch<sub>Π</sub>* ∈ *T*⨯Π*T* → 𝒫*T* for each type.
 
 If you have programmed in any modern language, you can almost certainly learn everything you need to know to understand the rest of this document by reading the table of contents for this section.
 On a first read, you might want to skip to the next section, and come back for a more careful review once you need to know the details of patches or encoding into bytes.
@@ -36,6 +58,8 @@ On a first read, you might want to skip to the next section, and come back for a
 In the descriptions of abstract values, the term *whitespace* means a text containing only `\u9\` (tab), `\u10\` (newline), or `\u32\` (space). A *comma-separated sequence* refers to text that contains a sequence of some other specified abstract values with commas in between. Comma-separated sequences are allowed to have arbitrarily many preceding commas, trailing commas, and whitespace around the commas. For example, ` ,, , 35,"35"	` and `,35,"35",` are each a comma-separated sequence of abstract values `35` and `"35"`, but `35,,"35"` is not.
 
 TODO: tabular representations? basic idea: CBOR lists of any type other than **i64** can start with some **i64** elements giving table dimensions; the CBOR list is then chunked up according to those dimensions before the rest of the decoding process takes place; think carefully about how `0`s fit into this; think carefully about how custom types that are sometimes just a tag (i.e. an **i64**) fit into this; think a bit about whether custom types should unpack their fields
+
+It is relatively common for types to be constrained -- for example, for numbers, one might want to talk only about numbers within a certain range. In that situation, patches MUST transform the current value, whatever that is, to another value that satisfies the constraint; meanwhile, the meaning of nondeterministic patches is to take the intersection of the *patch<sub>Π</sub>* output with the set of inhabitants satisfying the constraint. Some patches are defined by building edit scripts out of atomic edits; for example, list patches involve a sequence of insertions, deletions, and modifications. In those situations, the edit scripts are allowed to temporarily violate any ambient constraints, but the final modified value must satisfy them. For example, a patch to a list that is required to have length three is allowed to delete an element, provided it balances that by inserting one.
 
 The remaining sections of this document will use abstract values exclusively when talking about inhabitants of a type's interpretation. The remaining subsections of this section will occasionally blur the distinction between a type's name and its interpretation.
 
@@ -51,11 +75,25 @@ Concrete values use CBOR's number types, major types 0 (positive integers) and 1
 
 A patch is again an **i64**, to be added with the usual two's complement wrap-around rules:
 
-*patch*(*v*, *p*) = *v*+*p* mod 2<sup>64</sup>
+*patch<sub>Δ</sub>*(*v*, *p*) = *v*+*p* mod 2<sup>64</sup>
 
 (The mod operation chooses its representative from the range -2<sup>63</sup> through 2<sup>63</sup>-1.)
 
-Particular messages may restrict numbers further, such as by demanding that they fit in an unsigned byte (0 through 255 inclusive). This may mean that patches are forced to be out of the bounds for the type they are modifying; for example, with the unsigned-byte restriction, to change from `255` to `0`, one must use the patch `-255`, not `1`, even though `-255` does not fit in a single unsigned byte. As another example, if the number is restricted to the range `100` through `110`, none of the possible patches fall in the same range as the **i64** itself.
+A nondeterministic patch is an element of a custom type. See the "Custom Types" subsection below for details on the meaning of this table.
+
+| Type name | Variant | Tag | Fields | Constraints | Meaning
+| --------- | ------- | --- | ------ | ----------- | -------
+| **Πi64** | `determinate` | `0` | **Δi64** | | behave like a normal patch
+| | `union` | `1` | **[Δi64]** | | behave like one of these patches
+| | `indeterminate` | `2` | | | does not specify the new value of the **i64**
+
+The meanings suggested by the table above are made precise by *patch<sub>Π</sub>*:
+
+*patch<sub>Π</sub>*(*v*, `determinate(`*p*`)`) = {*patch<sub>Δ</sub>*(*v*, *p*)}  
+*patch<sub>Π</sub>*(*v*, `union([`*p*<sub>1</sub>`,` ...`,` *p*<sub>*n*</sub>`])`) = {*patch<sub>Δ</sub>*(*v*, *p*<sub>1</sub>), ..., *patch<sub>Δ</sub>*(*v*, *p*<sub>*n*</sub>)}  
+*patch<sub>Π</sub>*(*v*, `indeterminate`) = **i64**
+
+Particular messages or types may restrict numbers further, such as by demanding that they fit in an unsigned byte (0 through 255 inclusive). This may mean that patches are forced to be out of the bounds for the type they are modifying; for example, with the unsigned-byte restriction, to change from `255` to `0`, one must use the patch `-255`, not `1`, even though `-255` does not fit in a single unsigned byte. As another example, if the number is restricted to the range `100` through `110`, none of the possible patches fall in the same range as the **i64** itself.
 
 ### Strings (**string**)
 
@@ -69,16 +107,13 @@ An ***atomic string edit*** is a value of a custom type (see the "Custom Types" 
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| **atomic string edit**
-| | `delete`  | `0`
-| |           | | **i64** | non-negative | the index of the first codepoint deleted
-| |           | | **i64** | non-negative | the number of codepoints to delete
-| | `insert`  | `1`
-| |           | | **i64** | non-negative | the index where the first new codepoint will appear
-| |           | | **string** | | the text to insert
+| **atomic string edit** | `delete`  | `0` | **i64** | non-negative | the index of the first codepoint deleted
+| | | | **i64** | non-negative | the number of codepoints to delete
+| | `insert`  | `1` | **i64** | non-negative | the index where the first new codepoint will appear
+| | | | **string** | | the text to insert
 | | `replace` | `2` | | | a deletion (of the length of the second field) followed by an insertion
-| |           | | **i64** | non-negative | the index of the first codepoint to replace
-| |           | | **string** | | the new codepoints to write over the old text
+| | | | **i64** | non-negative | the index of the first codepoint to replace
+| | | | **string** | | the new codepoints to write over the old text
 
 All indexing is done by counting codepoints (and not, say, bytes or words used by some specific encoding). The auxiliary function *astrpatch* (short for "atomic string patch") makes the meaning of these precise:
 
@@ -88,9 +123,21 @@ All indexing is done by counting codepoints (and not, say, bytes or words used b
 
 In the above equations, the variables *m* and *n* stand in for the lengths of *p* and *s*, respectively. The usual math convention — where out-of-bound indexes are simply dropped from the sequence — applies here. A **string** patch is a sequence of **atomic string edit**s, to be applied in order.
 
-*patch*(*s*, `[`*p*<sub>0</sub>`,` ...`,` *p*<sub>*n*</sub>`]`) = *astrpatch*(*astrpatch*(*astrpatch*(*s*, *p*<sub>0</sub>), ...), *p*<sub>*n*</sub>)
+*patch<sub>Δ</sub>*(*s*, `[`*p*<sub>0</sub>`,` ...`,` *p*<sub>*n*</sub>`]`) = *astrpatch*(*astrpatch*(*astrpatch*(*s*, *p*<sub>0</sub>), ...), *p*<sub>*n*</sub>)
 
-Note that some messages may place additional restrictions on strings it contains; for example, by specifying a minimum or maximum length. Although the associated patch message is REQUIRED to have a patch that results in a string that satisfies those restrictions, individual atomic string edits may temporarily cause the construction of a sequence that does not. For example, if a string is required to have three codepoints, a patch that deletes a codepoint and inserts a new codepoint is allowed, even though there is an intermediate sequence of just two codepoints.
+Nondeterministic patches are another custom type.
+
+| Type name | Variant | Tag | Fields | Constraints | Meaning
+| --------- | ------- | --- | ------ | ----------- | -------
+| **Πstring** | `determinate` | `0` | **Δstring** | | behave like a normal patch
+| | `union` | `1` | **[Δstring]** | | behave like one of these patches
+| | `indeterminate` | `1` | | | does not specify the new value of the **string**
+
+Either one of the contained patches is applied verbatim, or any **string** is possible.
+
+*patch<sub>Π</sub>*(*v*, `determinate(`*p*`)`) = {*patch<sub>Δ</sub>*(*v*, *p*)}  
+*patch<sub>Π</sub>*(*v*, `union([`*p*<sub>0</sub>`,` ...`,` *p*<sub>*n*</sub>`])`) = {*patch<sub>Δ</sub>*(*v*, *p*<sub>0</sub>), ..., *patch<sub>Δ</sub>*(*v*, *p*<sub>*n*</sub>)}  
+*patch<sub>Π</sub>*(*v*, `indeterminate`) = **string**
 
 ## Container Base Types
 
@@ -102,32 +149,42 @@ Abstract values are a comma-separate sequence of abstract values for *T* surroun
 
 Concrete values use CBOR's sequence type, major type 4. Unlike CBOR, in damascus sequence elements all have the same type (but see "Custom Types" below, which also use major type 4 and do not have this restriction).
 
-An *atomic sequence edit* is a value of a custom type (see the "Custom Types" subsection below for more details on how to interpret this table).
+An *atomic sequence edit* is a value of one of two custom types. The two differences between the Δ and Π versions are that the Π version includes a variant that forgets everything about a list and that modifications use the Δ and Π versions of edits to element types.
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| atomic sequence edit for *T*
-| | `delete` | `0`
-| |          | | **i64** | non-negative | the index of the first element deleted
-| |          | | **i64** | non-negative | the number of elements to delete
-| | `insert` | `1`
-| |          | | **i64** | non-negative | the index where the first new element will appear
-| |          | | [*T*] | | the elements to insert
-| | `modify` | `2` | | | in-place mutation
-| |          | | **i64** | non-negative | the index of the first element to modify
-| |          | | [Δ*T*] | | the patches to apply to elements
+| atomic sequence Δ-edit for *T* | `delete` | `0` | **i64** | non-negative | the index of the first element deleted
+| | | | **i64** | non-negative | the number of elements to delete
+| | `insert` | `1` | **i64** | non-negative | the index where the first new element will appear
+| | | | [*T*] | | the elements to insert
+| | `modify` | `2` | | | in-place mutation | **i64** | non-negative | the index of the first element to modify
+| | | | **i64** | non-negative | the index of the first element to modify
+| | | | [Δ*T*] | | the patches to apply to elements
+| atomic sequence Π-edit for *T* | `delete` | `0` | **i64** | non-negative | the index of the first element deleted
+| | | | **i64** | non-negative | the number of elements to delete
+| | `insert` | `1` | **i64** | non-negative | the index where the first new element will appear
+| | | | [*T*] | | the elements to insert
+| | `modify` | `2` | | | in-place mutation | **i64** | non-negative | the index of the first element to modify
+| | | | **i64** | non-negative | the index of the first element to modify
+| | | | [Π*T*] | | the patches to apply to elements
+| | `union` | `3` | [Π[*T*]] | | behave like one of these patches
+| | `indeterminate` | `4` | | | all lists are possible
 
-The auxiliary function *aseqpatch* (short for "atomic sequence patch") makes the meaning of these precise:
+The auxiliary functions *aseqpatch<sub>Δ</sub>* and *aseqpatch<sub>Π</sub>* (short for "atomic sequence patch") make the meaning of these precise. The functions *aseqpatch<sub>Π</sub>* and *patch<sub>Π</sub>* for [*T*] are defined mutually recursively.
 
-*aseqpatch*(`[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*n*</sub>`]`, `delete(`*i*`,` *len*`)`) = `[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*i*-1</sub>`,` *s*<sub>*i*+*len*</sub>`,` ...`,` *s*<sub>*n*</sub>`]`  
-*aseqpatch*(`[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*n*</sub>`]`, `insert(`*i*`, [`*p*<sub>0</sub>`,` ...`,` *p*<sub>*m*</sub>`])`) = `[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*i*-1</sub>`,` *p*<sub>0</sub>`,` ...`,` *p*<sub>*m*</sub>`,` *s*<sub>*i*</sub>`,` ...`,` *s*<sub>*n*</sub>`]`  
-*aseqpatch*(`[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*n*</sub>`]`, `modify(`*i*`, [`*p*<sub>0</sub>`,` ...`,` *p*<sub>*m*</sub>`])`) = `[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*i*-1</sub>`,` *patch*(*s*<sub>*i*+0</sub>, *p*<sub>0</sub>)`,` ...`,` *patch*(*s*<sub>*i*+*m*</sub>, *p*<sub>*m*</sub>)`,` *s*<sub>*i*+*m*+1</sub>`,` ...`,` *s*<sub>*n*</sub>`]`
+*aseqpatch<sub>Δ</sub>*(`[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*n*</sub>`]`, `delete(`*i*`,` *len*`)`) = `[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*i*-1</sub>`,` *s*<sub>*i*+*len*</sub>`,` ...`,` *s*<sub>*n*</sub>`]`  
+*aseqpatch<sub>Δ</sub>*(`[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*n*</sub>`]`, `insert(`*i*`, [`*p*<sub>0</sub>`,` ...`,` *p*<sub>*m*</sub>`])`) = `[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*i*-1</sub>`,` *p*<sub>0</sub>`,` ...`,` *p*<sub>*m*</sub>`,` *s*<sub>*i*</sub>`,` ...`,` *s*<sub>*n*</sub>`]`  
+*aseqpatch<sub>Δ</sub>*(`[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*n*</sub>`]`, `modify(`*i*`, [`*p*<sub>0</sub>`,` ...`,` *p*<sub>*m*</sub>`])`) = `[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*i*-1</sub>`,` *patch*(*s*<sub>*i*+0</sub>, *p*<sub>0</sub>)`,` ...`,` *patch*(*s*<sub>*i*+*m*</sub>, *p*<sub>*m*</sub>)`,` *s*<sub>*i*+*m*+1</sub>`,` ...`,` *s*<sub>*n*</sub>`]`
 
-The usual math convention — where out-of-bound indices are simply dropped from the sequence — applies here. A [*T*] patch is a sequence of atomic sequence edits, to be applied in order.
+*aseqpatch<sub>Π</sub>*(`[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*n*</sub>`]`, `modify(`*i*`, [`*p*<sub>0</sub>`,` ...`,` *p*<sub>*m*</sub>`])`) = {`[`*s*<sub>0</sub>`,` ...`,` *s*<sub>*i*-1</sub>`,` *s'*<sub>*i*+0</sub>`,` ...`,` *s'*<sub>*i*+*m*</sub>`,` *s*<sub>*i*+*m*+1</sub>`,` ...`,` *s*<sub>*n*</sub>`]` | *s'*<sub>*j*</sub> ∈ *patch<sub>Π</sub>*(*s*<sub>*j*</sub>, *p*<sub>*j*-*i*</sub>)}  
+*aseqpatch<sub>Π</sub>*(*s*, `union([`*p*<sub>0</sub>`,` ...`,` *p*<sub>*n*</sub>`])`) = ⋃ {*patch<sub>Π</sub>*(*s*, *p*<sub>*i*</sub>) | *i* ∈ {0, ..., *n*}}  
+*aseqpatch<sub>Π</sub>*(*s*, `indeterminate`) = [*T*]  
+*aseqpatch<sub>Π</sub>*(*s*, *p*) = {*aseqpatch<sub>Δ</sub>*(*s*, *p*)} in all other cases
 
-*patch*(*s*, `[`*p*<sub>0</sub>`,` ...`,` *p*<sub>*n*</sub>`]`) = *aseqpatch*(*aseqpatch*(*aseqpatch*(*s*, *p*<sub>0</sub>), ...), *p*<sub>*n*</sub>)
+The usual math convention — where out-of-bound indices are simply dropped from the sequence — applies in the above definitions. A [*T*] patch is a sequence of atomic sequence Δ-edits, to be applied in order; similarly, a [*T*] nondeterministic patch is a sequence of atomic sequence Π-edits, to be applied in order.
 
-Note that some messages may place additional restrictions on sequences it contains; for example, by specifying a minimum or maximum length. Although the associated patch message is REQUIRED to have a patch that results in a sequence that satisfies those restrictions, individual atomic sequence edits may temporarily cause the construction of a sequence that does not. For example, if a sequence is required to have three elements, a patch that deletes an element and inserts a new element is allowed, even though there is an intermediate sequence of just two elements.
+*patch<sub>Δ</sub>*(*s*, `[`*p*<sub>0</sub>`,` ...`,` *p*<sub>*n*</sub>`]`) = *aseqpatch<sub>Δ</sub>*(*aseqpatch<sub>Δ</sub>*(*aseqpatch<sub>Δ</sub>*(*s*, *p*<sub>0</sub>), ...), *p*<sub>*n*</sub>)  
+*patch<sub>Π</sub>*(*s*, `[`*p*<sub>0</sub>`,` ...`,` *p*<sub>*n*</sub>`]`) = ∪*aseqpatch<sub>Π</sub>*(∪*aseqpatch<sub>Π</sub>*(∪*aseqpatch<sub>Π</sub>*({*s*}, *p*<sub>0</sub>), ...), *p*<sub>*n*</sub>)
 
 ### Dictionaries ({*K*:*V*})
 
@@ -137,34 +194,39 @@ A *mapping* for *k*⟼*v* is given by putting a colon (and, optionally, whitespa
 
 Concrete values use CBOR's map type, major type 5. Unlike CBOR, in damascus, all keys of a dictionary must have the same type, as do all values.
 
-An *atomic dictionary edit* is a custom type that describes how to update the mapping for a particular key.
+An *atomic dictionary edit* is one of two custom types that describe how to update the mapping for a particular key.
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| atomic dictionary edit for {*K*:*V*}
-| | `delete` | `0` | | | remove a key (and its associated value)
-| | `insert` | `1` | | | insert (or overwrite) the given value at this key
-| |          | | *V*
-| | `modify` | `2` | | | update the value at this key in-place (equivalent to a `copy` from the same key)
-| |          | | Δ*V*
+| atomic dictionary Δ-edit for {*K*:*V*} | `delete` | `0` | | | remove a key (and its associated value)
+| | `insert` | `1` | *V* | | insert (or overwrite) the given value at this key
+| | `modify` | `2` | Δ*V* | | update the value at this key in-place (equivalent to a `copy` from the same key)
 | | `copy`   | `3` | | | insert (or overwrite) with the value from another key
-| |          | | *K* | | this key has a starting value similar to the new value we want to create
-| |          | | Δ*V* | | when necessary, this allows small updates to the value after it is copied
+| | | | *K* | | this key has a starting value similar to the new value we want to create
+| | | | Δ*V* | | when necessary, this allows small updates to the value after it is copied
+| atomic dictionary Π-edit for {*K*:*V*} | `delete` | `0` | | | remove a key (and its associated value)
+| | `insert` | `1` | *V* | | insert (or overwrite) the given value at this key
+| | `modify` | `2` | Π*V* | | update the value at this key in-place (equivalent to a `copy` from the same key)
+| | `copy`   | `3` | | | insert (or overwrite) with the value from another key
+| | | | *K* | | this key has a starting value similar to the new value we want to create
+| | | | Π*V* | | when necessary, this allows small updates to the value after it is copied
 
-The type of patches for dictionaries then associates keys with edits, that is, a patch for {*K*:*V*} has type {*K*:atomic dictionary edit for {*K*:*V*}}. The updates are all performed with access to the old value; for example, this means that if a patch updates key `0` and copies key `0`, the copy will always start from the old value, never the new one. In detail:
+The type of patches for dictionaries then associates keys with edits, that is, a patch for {*K*:*V*} has type {*K*:atomic dictionary Δ-edit for {*K*:*V*}}. The updates are all performed with access to the old value; for example, this means that if a patch updates key `0` and copies key `0`, the copy will always start from the old value, never the new one. Nondeterministic patches make independent nondeterministic choices for each key; it is convenient to define an auxiliary function *adictpatch* ("atomic dictionary patch"). In detail:
 
-| *p*(*k*) | *d*(*k*) | *d*(*k'*) | *patch*(*d*,*p*)(*k*) |
-| -------- | -------- | --------- | --------------------- |
-| `delete` | anything | | undefined |
-| `insert(`*v*`)` | anything | | *v* |
-| `modify(`*Δv*`)` | undefined | | undefined |
-| `modify(`*Δv*`)` | *v* | | *patch*(*v*,*Δv*) |
-| `copy(`*k'*`,`*Δv*`)` | anything | undefined | undefined |
-| `copy(`*k'*`,`*Δv*`)` | anything | *v* | *patch*(*v*,*Δv*) |
-| undefined | undefined | | undefined |
-| undefined | *v* | | *v* |
+| *p*(*k*) | *d*(*k*) | *d*(*k'*) | *patch<sub>Δ</sub>*(*d*,*p*)(*k*) | *adictpatch*(*d*,*p*,*k*)
+| -------- | -------- | --------- | --------------------------------- | ------------------------------
+| `delete` | anything | | undefined | {undefined}
+| `insert(`*v*`)` | anything | | *v* | {*v*}
+| `modify(`*p'*`)` | undefined | | undefined | {}
+| `modify(`*p'*`)` | *v* | | *patch<sub>Δ</sub>*(*v*,*p'*) | *patch<sub>Π</sub>*(*v*,*p'*)
+| `copy(`*k'*`,`*p'*`)` | anything | undefined | undefined | {}
+| `copy(`*k'*`,`*p'*`)` | anything | *v* | *patch<sub>Δ</sub>*(*v*,*p'*) | *patch<sub>Π</sub>*(*v*,*p'*)
+| undefined | undefined | | undefined | {undefined}
+| undefined | *v* | | *v* | {*v*}
 
-(The intention is that exactly one row of the above table applies to each key in *K*. If this is not the case, it is a bug in the specification and the maintainer would like to hear about it.)
+Applying a nondeterministic patch takes the Cartesian product.
+
+*patch<sub>Π</sub>*(*d*,*p*) = {*d'* : ∀*k*. *d'*(*k*) ∈ *adictpatch*(*d*, *p*, *k*)}
 
 ## Custom Types (various, textual names)
 
@@ -172,18 +234,15 @@ For the algebraically minded, custom types are sums of products with an implicit
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| **cell**
-| | `cell` | `0`
-| | | | **i64** | in the range [0,17] | shape information
+| **cell** | `cell` | `0` | **i64** | in the range [0,17] | shape information
 | | | | **i64** | | color information
-| **server step**
-| | `pill` | `0` | | | The player is being given control of a new pill.
-| |        | | **i64** | non-negative and smaller than the board width | the x position of the bottom left of a new pill
-| |        | | **i64** | non-negative and smaller than the board height | the y position of the bottom left of a new pill
-| |        | | **i64** | non-negative and smaller than the number of available pill shapes | the shape of a new pill, as an index into the list of available pill shapes
-| |        | | **[i64]** | has an appropriate length for the given pill shape | the colors of each part of the pill
+| **server step** | `pill` | `0` | | | The player is being given control of a new pill.
+| | | | **i64** | non-negative and smaller than the board width | the x position of the bottom left of a new pill
+| | | | **i64** | non-negative and smaller than the board height | the y position of the bottom left of a new pill
+| | | | **i64** | non-negative and smaller than the number of available pill shapes | the shape of a new pill, as an index into the list of available pill shapes
+| | | | **[i64]** | has an appropriate length for the given pill shape | the colors of each part of the pill
 | | `new board` | `1` | | | The player must wait while the board changes.
-| |             | | **[[cell]]** | is of size board width ⨯ board height | the cells for a new state of the board
+| | | | **[[cell]]** | is of size board width ⨯ board height | the cells for a new state of the board
 
 (All custom types in this subsection are for expository purposes only, scoped only to this subsection, and not guaranteed to be consistent with similarly-named types from elsewhere in this document.)
 
@@ -199,24 +258,19 @@ Two exceptions are made to this pattern. First, if there is exactly one variant,
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| **possible i64**
-| | `nothing` | `0` | | | no number available
-| | `just`    | `1` | | | there is a number available
-| |           | | **i64**
-| **color**
-| | `black`  | `0`
-| | `blue`   | `1`
-| | `red`    | `2`
+| **possible i64** | `nothing` | `0` | | | no number available
+| | `just` | `1` | **i64** | | there is a number available
+| **color** | `black` | `0`
+| | `blue` | `1`
+| | `red` | `2`
 | | `yellow` | `3`
-| **shape**
-| | `shape`  | `0`
-| |          | | **i64** | fits in an unsigned byte | an index into the sequence of available shapes
+| **shape** | `shape` | `0` | **i64** | fits in an unsigned byte | an index into the sequence of available shapes
 
 The abstract value `just(3)` would use the normal pattern, and so might be encoded to the concrete value `'820103'`, say. But since `nothing` doesn't have any fields, it would be a 1-element array with just the tag, and so is encoded not as an array but as the tag directly, meaning the concrete value `'00'` would be one possible corresponding concrete value.
 
 Like `nothing`, the abstract values `black` and friends have no fields, so the concrete values `'00'`, `'01'`, `'02'`, and `'03'` would be correct encodings of the variants of a color.
 
-Since there is just one variant in the shape type, the abstract value `shape(3)` would not include the tag in its concrete value. Since there is just one field, this means there would be just one element if we were to use an array, and so we simply include the field directly. This means that `'03'` is an example of a correct concrete value for `shape(3)`.
+Since there is just one variant in **shape**, the abstract value `shape(3)` would not include the tag in its concrete value. Since there is just one field, this means there would be just one element if we were to use an array, and so we simply include the field directly. This means that `'03'` is an example of a correct concrete value for `shape(3)`.
 
 Contrast the concrete values for `shape(3)` and `just(3)`, which both have just one field; however, with `shape(3)` the tag is omitted because there are no other variants, while with `just(3)` there are other variants and so the tag is not omitted. Contrast also the concrete values for `shape(3)` and `yellow`, which are both bare values and not CBOR arrays; however, because the color type has many variants, the bare value must be a tag, and because the shape type has a single variant, the bare value must be a field.
 
@@ -226,35 +280,22 @@ Patches allow for patching fields within a variant, providing a complete new val
 
 | Type name | Variant | Tag | Fields
 | --------- | ------- | --- | ------
-| **Δcell**
-| | `no change` | `0`
-| | `Δcell` | `1`
-| | | | **Δi64** (=**i64**)
+| **Δcell** | `no change` | `0`
+| | `Δcell` | `1` | **Δi64** (=**i64**)
 | | | | **Δi64**
-| **Δserver step**
-| | `no change` | `0`
-| | `Δpill` | `1`
-| |         | | **Δi64**
-| |         | | **Δi64**
-| |         | | **Δi64**
-| |         | | **Δ[i64]**
-| | `Δnew board` | `2`
-| |              | | **Δ[[cell]]**
-| | `replace` | `3`
-| |           | | **server step**
-| **Δpossible i64**
-| | `no change` | `1`
-| | `Δjust`     | `2`
-| |             | | **Δi64**
-| | `replace`   | `3`
-| |             | | **possible i64**
-| **Δcolor**
-| | `no change` | `0`
-| | `replace`   | `1`
-| |             | | **color**
-| **Δshape**
-| | `Δshape`  | `1`
-| |           | | **Δi64**
+| **Δserver step** | `no change` | `0`
+| | `Δpill` | `1` | **Δi64**
+| | | | **Δi64**
+| | | | **Δi64**
+| | | | **Δ[i64]**
+| | `Δnew board` | `2` | **Δ[[cell]]**
+| | `replace` | `3` | **server step**
+| **Δpossible i64** | `no change` | `1`
+| | `Δjust`     | `2` | **Δi64**
+| | `replace`   | `3` | **possible i64**
+| **Δcolor** | `no change` | `0`
+| | `replace`   | `1` | **color**
+| **Δshape** | `Δshape`  | `1` | **Δi64**
 
 As with concrete values, the patches for a custom type that simply wraps another type have no associated overhead; their concrete values are exactly the same as the concrete values for patches to the wrapped type.
 
@@ -291,9 +332,7 @@ A ***cell*** describes what to draw at one grid location on the board, and inclu
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| **cell**
-| | `cell` | `0`
-| | | | **i64** | in the range [0,17] | shape information; see below
+| **cell** | `cell` | `0` | **i64** | in the range [0,17] | shape information; see below
 | | | | **i64** | | color information
 
 There are three classes of shapes: pill components (0-15), viruses (16), and unoccupied spaces (17). The pill components are expressed as a four-bit field describing whether the component should be drawn as connecting to its neighbors in each of the four directions, with a 1 bit indicating a connection and a 0 bit indicating no connection. With bit 0 being the least significant bit:
@@ -322,9 +361,7 @@ It will often be convenient to indicate a position (especially with relation to 
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| **point**
-| | `point` | `0`
-| | | | **i64** | | *x* coordinate
+| **point** | `point` | `0` | **i64** | | *x* coordinate
 | | | | **i64** | | *y* coordinate
 
 When talking about pills, sometimes it is important to talk only about the *content* of the pill — the cells it has, given in relation to a local origin — and sometimes it is more relevant to talk about a located version that also says where on the board the pill should be rendered. With that in mind, a ***pill content*** describes a collection of cells that the client can manipulate (e.g. by moving or rotating it), while a ***pill*** is the located version.
@@ -333,12 +370,8 @@ For uniformity, many types will demand that a nested list will have a certain cl
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| **pill content**
-| | `content` | `0`
-| | | | **[[cell]]** | unoccupied cells clipped
-| **pill**
-| | `pill` | `0`
-| | | | **point** | | the location of the pill's local origin on a board
+| **pill content** | `content` | `0` | **[[cell]]** | unoccupied cells clipped
+| **pill** | `pill` | `0` | **point** | | the location of the pill's local origin on a board
 | | | | **pill content**
 
 The outer list of lists should be interpreted as varying along the x axis, with earlier elements being at lower coordinates; similarly, each inner list of cells should be interpreted as varying along the y axis, with earlier elements being at lower coordinates.
@@ -347,9 +380,7 @@ A ***board*** describes the backdrop on which an individual player's game is tak
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| **board**
-| | `board` | `0`
-| | | | **[[cell]]** | nonempty; all elements must have the same length | board content
+| **board** | `board` | `0` | **[[cell]]** | nonempty; all elements must have the same length | board content
 
 The *width* of a board is the length of the outer list, and its *height* is the length of an inner list. The terms *in-bounds* and *out-of-bounds* are used in the obvious way to relate **point**s and **board**s. The **point** `(`*x*`,` *y*`)` is in-bounds for a board with width *w* and height *h* if 0≤*x*<*w* and 0≤*y*<*h* (and out-of-bounds otherwise).
 
@@ -359,10 +390,8 @@ Individual player's clients are always in one of two states: either there is a p
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| **control**
-| | `wait` | `0`
-| | `control` | `1`
-| | | | **i64** | non-negative | the first frame on which the player had control of their latest pill
+| **control** | `wait` | `0`
+| | `control` | `1` | **i64** | non-negative | the first frame on which the player had control of their latest pill
 | | | | **pill** | | the starting pill placed under player control
 | | | | **{i64: string}** | keys must be non-negative | the moves made by the player; keys are frame offsets from the first field
 
@@ -370,17 +399,13 @@ There is rudimentary support for in-game communication. It seems unreasonable to
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| **message content**
-| | `text` | `0`
-| | | | **string**
+| **message content** | `text` | `0` | **string**
 | | `impressed` | `1`
 | | `proud` | `2`
 | | `bored` | `3`
 | | `joined` | `4`
 | | `departed` | `5`
-| **message**
-| | `message` | `0`
-| | | | **i64** | | frame the message was sent
+| **message** | `message` | `0` | **i64** | | frame the message was sent
 | | | | **string** | | sending player
 | | | | **message content**
 
@@ -388,8 +413,8 @@ TODO: when describing the client message for sending messages to the server, sug
 
 Like most languages, this one has booleans.
 
-| Type name | Variant | Tag | Fields | Constraints | Meaning
-| --------- | ------- | --- | ------ | ----------- | -------
+| Type name | Variant | Tag
+| --------- | ------- | ---
 | **bool**
 | | `false` | `0`
 | | `true` | `1`
@@ -402,32 +427,22 @@ Like most languages, this one has booleans.
 
 | Type name | Variant | Tag | Fields | Constraints
 | --------- | ------- | --- | ------ | -----------
-| **pill shape**
-| | `shape` | `0`
-| | | | **[[cell]]** | unoccupied cells clipped; the recommendation that servers restrict colors to [0,5] does not apply to these cells
+| **pill shape** | `shape` | `0` | **[[cell]]** | unoccupied cells clipped; the recommendation that servers restrict colors to [0,5] does not apply to these cells
 
 A ***pill motion*** describes how to change a pill that's under control; it includes components for motion and rotation. *Forcing* is when a particular movement is required every so often (also called "gravity" when the force direction is down).
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| **pill motion**
-| | `variant` | `0`
-| | | | **[Δpoint]** | | spaces on the board that must be in-bounds and unoccupied for this variant to apply
+| **pill motion** | `variant` | `0` | **[Δpoint]** | | spaces on the board that must be in-bounds and unoccupied for this variant to apply
 | | | | **Δpoint** | | how to move the origin of the pill
 | | | | **pill shape** | | how to perform a rotation
-| **movement rule**
-| | `movement` | `0`
-| | | | **[string]** | | extra forcing counters to reset
+| **movement rule** | `movement` | `0` | **[string]** | | extra forcing counters to reset
 | | | | **bool** | | whether this motion can automatically be repeated many times in a single frame
 | | | | **bool** | | whether attempting and failing to make this move ends control of the pill
 | | | | **{pill shape: [pill motion]}** | keys must not mention the same color twice; the **pill shape**s in the values must only mention colors used in the key they are associated with; see the reference section for an additional uniqueness constraint
-| **force**
-| | `force` | `0`
-| | | | **string** | | the motion that's forced
+| **force** | `force` | `0` | **string** | | the motion that's forced
 | | | | **i64** | | how many frames may pass before the player is forced to make the motion
-| **movement rules**
-| | `movements` | `0`
-| | | | **[force]**
+| **movement rules** | `movements` | `0` | **[force]**
 | | | | **{string: movement rule}**
 
 Each **movement rule** has a name, which MAY be an arbitrary string. However, to help clients set up sensible bindings before the game rules have been communicated to it, there are a few conventions about how these names SHOULD be chosen by the server. Pure forms of the motions should be named with either a `"+"` or a `"-"`, followed by an axis chosen from `"x"` for horizontal movement, `"y"` for vertical movement, or `"θ"` for rotation. Rotations use the math convention: positive rotation is counterclockwise, negative is clockwise. If the ruleset allows clients to perform multiple pure motions in a single frame, the pure names should be listed in the order `"x"`, then `"y"`, then `"θ"`. For example, a down-right move would use the name `"+x-y"`, and a left-clockwise move would be named `"-x-θ"`.
@@ -678,6 +693,29 @@ If the motion update fails and the **movement rule**'s third field is `true`, in
 
 ### Predictions
 
+Robust predictions are a critical component for delivering on damascus' robustness promise. Here's some examples of the kinds of predictions that need to be supported, and some of the requirements they entail:
+
+* A player has started maneuvering a pill, but not yet finished. The client would like to let the server know the first few parts of the maneuvers, so that other clients can accurately draw a representation of their board.
+* The server has determined that the next pill a player will get is red-yellow. It would like to inform the client, so that when the player locks their current pill, they can begin speculatively maneuvering their next pill before receiving confirmation from the server of their last play. To accomodate this, predictions cannot only be about specific future frames, as the server does not know on what frame the client will finish maneuvering its pill.
+* The players have agreed to play a mode where they have three lookahead pieces, so the server would like to communicate that information to each player. That information is the same regardless of how the board evolves, so it must be possible to make predictions about only parts of the game state, leaving other parts indeterminate (or subject to other predictions).
+* One player got a combo, and sent garbage to the other player. The server would like to inform the receiving player of the animation to draw, so that it can smoothly begin as soon as they lock their current pill. The correct animation to draw depends on the state of the board after locking the pill, a thing the client doesn't know, and the state of the board depends on where and in what orientation the pill locks, a thing the server doesn't know; one way to deal with this is to allow conditional predictions and for the server to send multiple predictions each conditioned on a different final pill setup.
+
+To support all of these scenarios, each prediction has two parts, one describing when and under what conditions it applies, and one describing what parts of the state to update. The conditions are given as a sequence of frame advancements and filters:
+
+| Type name | Variant | Tag | Fields | Constraints | Meaning
+| --------- | ------- | --- | ------ | ----------- | -------
+| **precondition** | `frame` | `0` | **i64** | | wait until the current frame number is at least this big
+| | `Δframe` | `1` | **i64** | positive | wait this many frames
+| | `lock` | `2` | | | wait until this player next locks a pill
+| | `control` | `3` | | | wait until this player next has control of a pill
+| | `x` | `4` | **i64**
+| | `y` | `5` | **i64**
+| | `pill` | `6` | **pill content**
+
+The `x`, `y`, and `pill` filters indicate that the remainder of a prediction applies only if the last pill locked by this player was at the corresponding coordinates or had the corresponding content.
+
+TODO: gotta introduce a new kind of delta, nondeterministic deltas
+
 #### Server predictions
 
 #### Client predictions
@@ -688,15 +726,9 @@ Each player is associated with a data structure that combines most of the inform
 
 | Type name | Variant | Tag | Fields | Constraints | Meaning
 | --------- | ------- | --- | ------ | ----------- | -------
-| **player**
-| | `player`
-| | | `0`
-| | | | **i64** | | what frame they are on
+| **player** | `player` | `0` | **i64** | | what frame they are on
 | | | | **board**
 | | | | **movement rules**
 | | | | **control**
-| **game**
-| | `game`
-| | | `0`
-| | | | **{string: player}**
+| **game** | `game` | `0` | **{string: player}**
 | | | | **[message]**
