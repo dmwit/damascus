@@ -1,0 +1,3 @@
+packages: .
+-- sized-base bounds rule out TH-2.16, but it works fine
+allow-newer: template-haskell

@@ -1,0 +1,62 @@
+cabal-version:      2.4
+name:               damascus
+version:            0.1.0.0
+synopsis:           A game server and client for a special class of puzzle games
+homepage:           https://github.com/dmwit/damascus
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             Daniel Wagner
+maintainer:         me@dmwit.com
+copyright:          Copyright 2022 Daniel Wagner
+category:           Network
+extra-source-files: CHANGELOG.md README.md
+
+-- It's so stupid that you can't import a common stanza until after the stanza.
+-- These don't have the interesting information; they should come last in the
+-- file, not first.
+common basics
+    default-language: Haskell2010
+    build-depends:      base ^>=4.14.1.0
+                      , bytestring ^>=0.11
+                      , cborg ^>=0.2
+                      , hashable ^>=1.4
+                      , text ^>=2.0
+                      , unordered-containers ^>=0.2
+                      , vector ^>=0.12
+    ghc-options:      -O2 -Wall -Wno-tabs
+
+common exe
+    import:           basics
+    hs-source-dirs:   exe
+    build-depends:    damascus
+
+library
+    import:           basics
+    exposed-modules:  Damascus
+                      Damascus.Message
+                      Damascus.Message.TH
+    other-modules:    Damascus.Message.Internal
+    hs-source-dirs:   lib
+    ghc-options:      -ddump-splices
+    build-depends:    template-haskell ^>=2.16
+                      , text-show ^>=3.9
+
+executable damascus-server
+    import:           exe
+    main-is:          server.hs
+
+executable damascus-client
+    import:           exe
+    main-is:          client.hs
+
+test-suite damascus-test
+    import:           basics
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          main.hs
+    build-depends:    damascus
+                      , dictionary-sharing ^>=0.1
+                      , QuickCheck ^>=2.14
+                      , template-haskell ^>=2.16
+                      , testing-feat ^>=1.1
+    ghc-options:      -Wno-orphans
