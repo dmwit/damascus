@@ -45,7 +45,7 @@ main = do
 	unless success (exitWith (ExitFailure 1))
 
 messageRoundTrip :: (Eq a, DM.ImmutableMessage a) => a -> Bool
-messageRoundTrip a = (DM.decode . BS.fromStrict . DM.encode) a == Right a
+messageRoundTrip a = (DM.decode . BS.fromStrict . DM.encode) a == Right (mempty, a)
 
 instance Arbitrary Text where
 	arbitrary = T.pack <$> arbitrary

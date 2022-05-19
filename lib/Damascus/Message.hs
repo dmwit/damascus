@@ -52,15 +52,8 @@ abstraction = TS.toLazyText . abstractionC
 encode :: ImmutableMessage a => a -> BS.ByteString
 encode = CBOR.toStrictByteString . encodeC
 
-decode :: ImmutableMessage a => LBS.ByteString -> Either CBOR.DeserialiseFailure a
-decode bs = do
-	(bs', off, a) <- CBOR.deserialiseFromBytesWithSize decodeC bs
-	if LBS.null bs'
-	then pure a
-	else Left . CBOR.DeserialiseFailure off $ "leftover junk after decoding CBOR value: " ++
-		if LBS.length bs' < 20
-		then show bs'
-		else init (show (LBS.take 17 bs')) ++ "...\""
+decode :: ImmutableMessage a => LBS.ByteString -> Either CBOR.DeserialiseFailure (LBS.ByteString, a)
+decode = CBOR.deserialiseFromBytes decodeC
 
 -- This is split out into its own class so that the Template Haskell doesn't
 -- have to figure out how to convert an English description into code.
